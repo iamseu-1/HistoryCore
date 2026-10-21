@@ -52,3 +52,14 @@ android {
         minSdk = 24
     }
 }
+
+// 미리 지은 엔진(.so)이 없으면 엔진 없는 APK가 조용히 나온다 — 짓기 전에 멈춘다.
+def engineLibs = file("../native/android")
+tasks.matching { it.name == "preBuild" }.configureEach {
+    doFirst {
+        def found = engineLibs.isDirectory() && engineLibs.listFiles().any { abi -> new File(abi, "libhistory_core.so").isFile() }
+        if (!found) {
+            throw new GradleException("HistoryCore 엔진(libhistory_core.so)이 없습니다: ${engineLibs} — HistoryCore/tools/build-native.ps1 -Android 를 먼저 돌리세요.")
+        }
+    }
+}
