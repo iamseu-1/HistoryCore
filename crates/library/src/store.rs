@@ -4,7 +4,7 @@ use crate::hlc::{Clock, Hlc, WallClock};
 use crate::ids::{DeviceId, DocId, LibraryId, RevId};
 use crate::ns::Namespace;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
 
 /// 앱 자료 폴더 아래 엔진의 자리. 옛 앱은 자료 폴더 바로 아래에 `library.db` · `index.db` · `local.db`를 두었으므로
@@ -189,6 +189,13 @@ impl Library {
         let folder = app_dir.join(FOLDER);
         std::fs::create_dir_all(&folder)?;
         let path = folder.join(FILE);
+        if std::fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false) {
+            // 먼저 읽기 전용으로만 본다 — 읽기 · 쓰기로 열면 SQLite가 남의 파일에 남은 WAL · 롤백 저널을
+            // 되감거나 합쳐 넣어(파일을 바꿔) 버린다. 우리 서재로 확인된 뒤에만 읽기 · 쓰기로 연다.
+            let probe = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)
+                .map_err(|e| identity_error(e, &path))?;
+            check_identity(&probe, &path)?;
+        }
         let db = Connection::open(&path)?;
         let tables = check_identity(&db, &path)?;
         db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")?;
@@ -213,9 +220,9 @@ impl Library {
 /// 이 파일이 우리 서재인지 본다 — 아무것도 쓰지 않는다. 표 수를 돌려준다(0이면 빈 새 파일).
 fn check_identity(db: &Connection, path: &Path) -> Result<i64> {
     let not_ours = || Error::NotALibrary(path.to_path_buf());
-    let app_id: i64 = db.pragma_query_value(None, "application_id", |r| r.get(0)).map_err(|_| not_ours())?;
-    let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(|_| not_ours())?;
-    let tables: i64 = db.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0)).map_err(|_| not_ours())?;
+    let app_id: i64 = db.pragma_query_value(None, "application_id", |r| r.get(0)).map_err(|e| identity_error(e, path))?;
+    let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(|e| identity_error(e, path))?;
+    let tables: i64 = db.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0)).map_err(|e| identity_error(e, path))?;
     if tables == 0 && (app_id == 0 || app_id == APPLICATION_ID) {
         return Ok(0);
     }
@@ -226,6 +233,15 @@ fn check_identity(db: &Connection, path: &Path) -> Result<i64> {
         return Err(Error::NewerFormat { found: version, supported: FORMAT });
     }
     Ok(tables)
+}
+
+/// SQLite가 "DB 파일이 아님"이라 할 때만 남의 파일로 본다. 잠김 · 권한 · 입출력 오류는 그대로 올린다 —
+/// 내 서재가 잠깐 잠겼을 뿐인데 "서재 파일이 아님"이라 하면 사용자가 진짜 서재를 지울 수 있다.
+fn identity_error(e: rusqlite::Error, path: &Path) -> Error {
+    match &e {
+        rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::NotADatabase => Error::NotALibrary(path.to_path_buf()),
+        _ => Error::Sqlite(e),
+    }
 }
 
 fn create_schema(db: &Connection) -> Result<()> {
