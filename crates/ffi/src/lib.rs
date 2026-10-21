@@ -1,9 +1,11 @@
 //! Flutter 다리 — C 함수 둘(`hc_call` · `hc_free`). 요청과 답은 UTF-8 JSON이다.
 //! 답은 실패해도 늘 `{"ok":false,"error":…}`이고 널을 돌려주지 않는다.
+mod ops;
+
 use serde_json::{json, Value};
 use std::ffi::{c_char, CStr, CString};
 
-/// 요청 하나를 처리한다. 상태를 갖지 않으므로 여러 스레드에서 동시에 불러도 된다.
+/// 요청 하나를 처리한다. version · echo는 상태가 없고, 서재 op는 손잡이 표(Mutex) 하나를 나눠 쓴다 — 여러 스레드에서 불러도 된다.
 pub fn handle(request: &str) -> Value {
     let req: Value = match serde_json::from_str(request) {
         Ok(v) => v,
@@ -17,7 +19,7 @@ pub fn handle(request: &str) -> Value {
         }),
         // 다리 점검용 — 받은 글을 그대로 돌려준다(4바이트 글자 · 이스케이프 확인).
         Some("echo") => json!({"ok": true, "text": req.get("text").cloned().unwrap_or(Value::Null)}),
-        Some(op) => json!({"ok": false, "error": format!("모르는 op: {op}")}),
+        Some(op) => ops::handle_op(op, &req).unwrap_or_else(|| json!({"ok": false, "error": format!("모르는 op: {op}")})),
         None => json!({"ok": false, "error": "op가 없음"}),
     }
 }
