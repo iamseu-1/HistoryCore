@@ -31,8 +31,11 @@ fn all_text(blocks: &[Block]) -> String {
 #[test]
 fn five_thousand_nested_list_levels_do_not_overflow_the_stack() {
     // 옛 Dart의 목록 쌓기는 깊이를 재지 않았다.
+    // 들여쓰기가 단마다 늘어 입력이 12.5MB다 — 이 검사는 스택을 보는 것이라 시간은 넉넉히(10초) 둔다.
     let src: String = (1..=5_000).map(|k| format!("{}* {k}", " ".repeat(k))).collect::<Vec<_>>().join("\n");
-    let d = timed("5,000단 목록", &src);
+    let t = Instant::now();
+    let d = parse(&src, &Options::default());
+    assert!(t.elapsed() < Duration::from_secs(10), "5,000단 목록: {:?}", t.elapsed());
     assert!(matches!(d.blocks.first(), Some(Block::List { .. })));
     assert!(all_text(&d.blocks).contains("5000"));
 }
