@@ -1,0 +1,110 @@
+{
+  "library": "naive-sqlite",
+  "device": "pc",
+  "docs": 1000000,
+  "seed": 20261021,
+  "load_ms": 2078750,
+  "bytes_on_disk": 11223093248,
+  "ops": [
+    {
+      "op": "FindTitle",
+      "count": 2000,
+      "p50_us": 133,
+      "p95_us": 290,
+      "p99_us": 2079,
+      "max_us": 66079
+    },
+    {
+      "op": "SearchBody",
+      "count": 1000,
+      "p50_us": 332,
+      "p95_us": 12227,
+      "p99_us": 116624,
+      "max_us": 317149
+    },
+    {
+      "op": "Open",
+      "count": 2000,
+      "p50_us": 258,
+      "p95_us": 470,
+      "p99_us": 648,
+      "max_us": 1232
+    },
+    {
+      "op": "CategoryChildren",
+      "count": 500,
+      "p50_us": 129,
+      "p95_us": 286,
+      "p99_us": 405,
+      "max_us": 3655
+    },
+    {
+      "op": "HomeAggregates",
+      "count": 50,
+      "p50_us": 7039788,
+      "p95_us": 10744328,
+      "p99_us": 76579935,
+      "max_us": 76579935
+    },
+    {
+      "op": "Save",
+      "count": 300,
+      "p50_us": 1830,
+      "p95_us": 61419,
+      "p99_us": 120676,
+      "max_us": 132931
+    },
+    {
+      "op": "Startup",
+      "count": 5,
+      "p50_us": 8200548,
+      "p95_us": 9019969,
+      "p99_us": 9019969,
+      "max_us": 9019969
+    }
+  ],
+  "verdicts": [
+    {
+      "label": "제목 찾기 p99 ≤ 10ms",
+      "limit_us": 10000,
+      "measured_us": 2079,
+      "pass": true
+    },
+    {
+      "label": "본문 찾기 첫 20건 p95 ≤ 10ms",
+      "limit_us": 10000,
+      "measured_us": 12227,
+      "pass": false
+    },
+    {
+      "label": "문서 열기 p95 ≤ 16ms",
+      "limit_us": 16000,
+      "measured_us": 470,
+      "pass": true
+    },
+    {
+      "label": "저장 한 편 p95 ≤ 50ms",
+      "limit_us": 50000,
+      "measured_us": 61419,
+      "pass": false
+    },
+    {
+      "label": "분류 폴더 하나 펼치기 ≤ 16ms",
+      "limit_us": 16000,
+      "measured_us": 286,
+      "pass": true
+    },
+    {
+      "label": "대문 · 통계 모음 ≤ 50ms",
+      "limit_us": 50000,
+      "measured_us": 10744328,
+      "pass": false
+    },
+    {
+      "label": "앱 시작 → 대문 ≤ 1초(엔진 몫)",
+      "limit_us": 1000000,
+      "measured_us": 9019969,
+      "pass": false
+    }
+  ]
+}

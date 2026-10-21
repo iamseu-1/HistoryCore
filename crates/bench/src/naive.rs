@@ -8,14 +8,14 @@ const FILE: &str = "naive.db";
 const PRAGMAS: &str = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
 const SCHEMA: &str = "
 CREATE TABLE doc(id INTEGER PRIMARY KEY, ns INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, grp TEXT, updated INTEGER NOT NULL, UNIQUE(ns, title));
-CREATE INDEX doc_updated ON doc(updated DESC);
+CREATE INDEX doc_recent ON doc(ns, updated DESC);
 CREATE INDEX doc_grp ON doc(ns, grp);
 CREATE TABLE cat_member(cat TEXT NOT NULL, doc INTEGER NOT NULL, PRIMARY KEY(cat, doc)) WITHOUT ROWID;
 CREATE VIRTUAL TABLE fts USING fts5(body, content='doc', content_rowid='id', tokenize='trigram');
 ";
 
-/// 대문 모음: 큰 갈래별 일반 문서 수.
-const GROUPS_SQL: &str = "SELECT COALESCE(grp, '분류 안 됨'), COUNT(*) FROM doc WHERE ns = 0 GROUP BY 1 ORDER BY 2 DESC";
+/// 대문 모음: 큰 갈래별 일반 문서 수. 색인 차례 그대로 세도록 열로 묶고, 이름 붙이기 · 정렬은 Rust에서 한다(갈래는 몇 개뿐).
+const GROUPS_SQL: &str = "SELECT grp, COUNT(*) FROM doc WHERE ns = 0 GROUP BY grp";
 /// 대문 모음: 최근 바뀐 일반 문서 10.
 const RECENT_SQL: &str = "SELECT id FROM doc WHERE ns = 0 ORDER BY updated DESC LIMIT 10";
 
@@ -150,9 +150,10 @@ impl Library for NaiveSqlite {
 
     fn home_aggregates(&self) -> Result<Aggregates> {
         let mut st = self.db.prepare_cached(GROUPS_SQL)?;
-        let groups = st
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
+        let mut groups = st
+            .query_map([], |r| Ok((r.get::<_, Option<String>>(0)?.unwrap_or_else(|| "분류 안 됨".into()), r.get::<_, i64>(1)? as u64)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
+        groups.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         let mut st = self.db.prepare_cached(RECENT_SQL)?;
         let recent = ids(st.query_map([], |r| r.get::<_, u32>(0))?)?;
         Ok(Aggregates { groups, recent })
@@ -193,5 +194,22 @@ mod tests {
         db.execute_batch(SCHEMA).unwrap();
         let p = plan(&db, GROUPS_SQL);
         assert!(p.contains("COVERING INDEX"), "{p}");
+    }
+
+    #[test]
+    fn home_groups_stream_in_index_order_without_a_sort() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(SCHEMA).unwrap();
+        let p = plan(&db, GROUPS_SQL);
+        assert!(!p.contains("TEMP B-TREE FOR GROUP BY"), "{p}");
+    }
+
+    #[test]
+    fn recent_docs_come_from_an_index_in_order() {
+        // 최근 10편을 고르려고 일반 문서 전부를 updated로 정렬하면(넘침 쪽까지 읽어) 100만에서 초 단위가 된다.
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(SCHEMA).unwrap();
+        let p = plan(&db, RECENT_SQL);
+        assert!(!p.contains("TEMP B-TREE"), "{p}");
     }
 }

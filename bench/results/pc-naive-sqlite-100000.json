@@ -3,108 +3,108 @@
   "device": "pc",
   "docs": 100000,
   "seed": 20261021,
-  "load_ms": 211067,
-  "bytes_on_disk": 1129361408,
+  "load_ms": 166558,
+  "bytes_on_disk": 1131520000,
   "ops": [
     {
       "op": "FindTitle",
       "count": 2000,
       "p50_us": 25,
-      "p95_us": 53,
-      "p99_us": 106,
-      "max_us": 412
+      "p95_us": 55,
+      "p99_us": 130,
+      "max_us": 703
     },
     {
       "op": "SearchBody",
       "count": 1000,
-      "p50_us": 239,
-      "p95_us": 10783,
-      "p99_us": 110362,
-      "max_us": 219642
+      "p50_us": 243,
+      "p95_us": 10253,
+      "p99_us": 118721,
+      "max_us": 258432
     },
     {
       "op": "Open",
       "count": 2000,
-      "p50_us": 21,
-      "p95_us": 46,
-      "p99_us": 67,
-      "max_us": 307
+      "p50_us": 23,
+      "p95_us": 52,
+      "p99_us": 80,
+      "max_us": 482
     },
     {
       "op": "CategoryChildren",
       "count": 500,
-      "p50_us": 9,
-      "p95_us": 26,
-      "p99_us": 40,
-      "max_us": 240
+      "p50_us": 10,
+      "p95_us": 31,
+      "p99_us": 50,
+      "max_us": 136
     },
     {
       "op": "HomeAggregates",
       "count": 50,
-      "p50_us": 2182470,
-      "p95_us": 2410119,
-      "p99_us": 2663470,
-      "max_us": 2663470
+      "p50_us": 708732,
+      "p95_us": 801303,
+      "p99_us": 869739,
+      "max_us": 869739
     },
     {
       "op": "Save",
       "count": 300,
-      "p50_us": 1129,
-      "p95_us": 33484,
-      "p99_us": 55248,
-      "max_us": 59955
+      "p50_us": 1316,
+      "p95_us": 34668,
+      "p99_us": 62542,
+      "max_us": 64226
     },
     {
       "op": "Startup",
       "count": 5,
-      "p50_us": 2083610,
-      "p95_us": 2209883,
-      "p99_us": 2209883,
-      "max_us": 2209883
+      "p50_us": 714603,
+      "p95_us": 733103,
+      "p99_us": 733103,
+      "max_us": 733103
     }
   ],
   "verdicts": [
     {
       "label": "제목 찾기 p99 ≤ 10ms",
       "limit_us": 10000,
-      "measured_us": 106,
+      "measured_us": 130,
       "pass": true
     },
     {
       "label": "본문 찾기 첫 20건 p95 ≤ 10ms",
       "limit_us": 10000,
-      "measured_us": 10783,
+      "measured_us": 10253,
       "pass": false
     },
     {
       "label": "문서 열기 p95 ≤ 16ms",
       "limit_us": 16000,
-      "measured_us": 46,
+      "measured_us": 52,
       "pass": true
     },
     {
       "label": "저장 한 편 p95 ≤ 50ms",
       "limit_us": 50000,
-      "measured_us": 33484,
+      "measured_us": 34668,
       "pass": true
     },
     {
       "label": "분류 폴더 하나 펼치기 ≤ 16ms",
       "limit_us": 16000,
-      "measured_us": 26,
+      "measured_us": 31,
       "pass": true
     },
     {
       "label": "대문 · 통계 모음 ≤ 50ms",
       "limit_us": 50000,
-      "measured_us": 2410119,
+      "measured_us": 801303,
       "pass": false
     },
     {
       "label": "앱 시작 → 대문 ≤ 1초(엔진 몫)",
       "limit_us": 1000000,
-      "measured_us": 2209883,
-      "pass": false
+      "measured_us": 733103,
+      "pass": true
     }
   ]
 }
