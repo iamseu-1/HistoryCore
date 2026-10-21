@@ -1,5 +1,6 @@
 //! 100만 건 측정 판 — 서재 구현 하나(`Library`)를 같은 일감으로 재고 예산표(설계 9-2)와 견준다.
 pub mod library;
+pub mod naive;
 pub mod report;
 pub mod run;
 pub mod stats;
