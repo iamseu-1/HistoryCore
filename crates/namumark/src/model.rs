@@ -1,7 +1,7 @@
 //! 그리기 모델(설계 5-6) — 저장할 때 한 번 굳혀 두고 library_view가 이것만 그린다.
 //! 틀을 펼치고(넘겨주기 한 번 따라감), 각주를 그린 차례로 다시 매기고, 한자 구간을 가르고, 문단 범위를 UTF-16 칸으로 낸다.
 use crate::ast::{Align, Block, FootnoteDef, Inline, ListStyle, Style};
-use crate::parser::{parse, redirect_of, Options};
+use crate::parser::{parse, parse_budgeted, redirect_of, Options};
 use crate::refs::{ObjectRef, TEMPLATE};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -13,6 +13,11 @@ pub const MODEL_VERSION: u32 = 1;
 pub const MAX_TEMPLATE_DEPTH: usize = 8;
 /// 한 문서에서 틀을 펼치는 횟수의 한계(틀이 틀을 여러 번 부르는 폭발을 막는다).
 pub const MAX_TEMPLATE_EXPANSIONS: usize = 2_000;
+/// 한 문서를 그리는 동안 읽은 틀 원문과 채운 글을 합친 한계(바이트) — 인자를 여러 번 넘기는 틀이
+/// 단마다 글을 몇 배로 불려 멈추거나 메모리가 바닥나는 것을 막는다(최종 검토 2).
+pub const MAX_TEMPLATE_BYTES: usize = 8 << 20;
+/// 펼치는 틀 모두가 나눠 쓰는 짝 찾기 예산의 바닥(그 위에 채운 글 1바이트마다 64).
+const TEMPLATE_WORK_FLOOR: usize = 1_000_000;
 
 /// 틀 원문을 주는 곳 — 다리는 열린 서재에서, 시험은 메모리에서.
 pub trait Templates {
@@ -50,6 +55,7 @@ pub enum TemplateStatus {
     Cycle,
     TooDeep,
     TooMany,
+    TooLarge,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,6 +182,17 @@ fn fill_params(source: &str, args: &BTreeMap<String, String>) -> String {
     .into_owned()
 }
 
+/// `fill_params`가 낼 글의 길이 — 채우기 전에 크기 한계를 본다.
+fn filled_len(source: &str, args: &BTreeMap<String, String>) -> usize {
+    FILL.captures_iter(source).fold(source.len(), |len, c| {
+        let with = match args.get(&c[1]) {
+            Some(v) => v.len(),
+            None => c.get(2).map_or(0, |g| g.len()),
+        };
+        len.saturating_add(with) - c[0].len()
+    })
+}
+
 fn is_han(c: char) -> bool {
     matches!(c as u32, 0x4E00..=0x9FFF | 0x3400..=0x4DBF | 0xF900..=0xFAFF | 0x20000..=0x323AF)
 }
@@ -228,7 +245,19 @@ pub fn render(source: &str, options: &RenderOptions, templates: &dyn Templates) 
     if let (true, Some(t)) = (options.template, &options.title) {
         chain.push(format!("{TEMPLATE}:{t}"));
     }
-    let mut b = Builder { templates, chain, expansions: 0, defs: vec![doc.footnotes.clone()], numbers: HashMap::new(), footnotes: Vec::new(), template_categories: Vec::new(), used: Vec::new() };
+    let mut b = Builder {
+        templates,
+        cache: HashMap::new(),
+        chain,
+        expansions: 0,
+        bytes: 0,
+        work: TEMPLATE_WORK_FLOOR,
+        defs: vec![doc.footnotes.clone()],
+        numbers: HashMap::new(),
+        footnotes: Vec::new(),
+        template_categories: Vec::new(),
+        used: Vec::new(),
+    };
     let blocks = b.blocks(&doc.blocks, 0);
     let mut bytes = Vec::with_capacity(doc.sections.len() * 2);
     for s in &doc.sections {
@@ -247,9 +276,15 @@ pub fn render(source: &str, options: &RenderOptions, templates: &dyn Templates) 
 
 struct Builder<'t> {
     templates: &'t dyn Templates,
+    /// 읽은 틀 원문(없던 것도) — 한 번 그리는 동안 같은 틀은 한 번만 읽는다.
+    cache: HashMap<String, Option<String>>,
     /// 지금 펼치는 중인 틀의 사슬(고리 막기).
     chain: Vec<String>,
     expansions: usize,
+    /// 읽은 틀 원문과 채운 글의 합(`MAX_TEMPLATE_BYTES`까지).
+    bytes: usize,
+    /// 남은 짝 찾기 예산 — 틀마다 새로 받지 않고 나눠 쓴다.
+    work: usize,
     /// 원문마다(0 = 문서, 1.. = 펼친 틀 하나하나)의 각주 정의.
     defs: Vec<Vec<FootnoteDef>>,
     /// (원문, 원문 속 번호) → 모델 번호.
@@ -335,8 +370,9 @@ impl Builder<'_> {
         if self.expansions >= MAX_TEMPLATE_EXPANSIONS {
             return stop(TemplateStatus::TooMany);
         }
-        let Some(mut source) = self.templates.source(target) else {
-            return stop(TemplateStatus::Missing);
+        let mut source = match self.read(target) {
+            Ok(s) => s,
+            Err(status) => return stop(status),
         };
         let mut real = target.clone();
         if let Some(next) = redirect_of(&source) {
@@ -346,17 +382,25 @@ impl Builder<'_> {
             if next_path == path || self.chain.contains(&next_path) {
                 return stop(TemplateStatus::Cycle);
             }
-            match self.templates.source(&next) {
-                Some(s) if redirect_of(&s).is_none() => {
+            match self.read(&next) {
+                Ok(s) if redirect_of(&s).is_none() => {
                     source = s;
                     real = next;
                 }
-                _ => return stop(TemplateStatus::Missing),
+                Ok(_) => return stop(TemplateStatus::Missing),
+                Err(status) => return stop(status),
             }
         }
+        let size = filled_len(&source, args);
+        if self.bytes.saturating_add(size) > MAX_TEMPLATE_BYTES {
+            return stop(TemplateStatus::TooLarge);
+        }
+        self.bytes += size;
         self.expansions += 1;
         let filled = fill_params(&source, args);
-        let tdoc = parse(&filled, &Options { template: false, current: Some(real.key.clone()), ..Options::default() });
+        let budget = self.work.saturating_add(filled.len().saturating_mul(64));
+        let (tdoc, left) = parse_budgeted(&filled, &Options { template: false, current: Some(real.key.clone()), ..Options::default() }, budget);
+        self.work = left;
         for c in &tdoc.categories {
             if !self.template_categories.contains(c) {
                 self.template_categories.push(c.clone());
@@ -368,6 +412,19 @@ impl Builder<'_> {
         let blocks = self.blocks(&tdoc.blocks, inst);
         self.chain.pop();
         MBlock::Template { target: target.clone(), status: TemplateStatus::Ok, blocks }
+    }
+
+    /// 틀 원문. 읽은 글도 크기 한계에 센다 — 한계를 넘는 틀은 훑지도 베끼지도 않는다.
+    fn read(&mut self, target: &ObjectRef) -> Result<String, TemplateStatus> {
+        let templates = self.templates;
+        let Some(s) = self.cache.entry(target.path()).or_insert_with(|| templates.source(target)) else {
+            return Err(TemplateStatus::Missing);
+        };
+        if self.bytes.saturating_add(s.len()) > MAX_TEMPLATE_BYTES {
+            return Err(TemplateStatus::TooLarge);
+        }
+        self.bytes += s.len();
+        Ok(s.clone())
     }
 
     fn note(&mut self, path: &str) {

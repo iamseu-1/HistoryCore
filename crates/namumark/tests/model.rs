@@ -1,7 +1,11 @@
-use history_namumark::{render, MBlock, MInline, Model, NoTemplates, RenderOptions, TemplateStatus, MAX_TEMPLATE_DEPTH};
+use history_namumark::{render, MBlock, MInline, Model, NoTemplates, ObjectRef, RenderOptions, TemplateStatus, Templates, MAX_TEMPLATE_BYTES, MAX_TEMPLATE_DEPTH};
+use std::cell::Cell;
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+
+/// 시간 한계 — 디버그 짓기는 느리고 CI는 붐벼 넉넉히, 릴리스는 빡빡하게(CI가 릴리스로도 돌린다).
+const LIMIT: Duration = if cfg!(debug_assertions) { Duration::from_secs(30) } else { Duration::from_secs(3) };
 
 fn plain() -> RenderOptions {
     RenderOptions::default()
@@ -112,7 +116,7 @@ fn template_explosions_stop_quickly() {
     let doc = "[include(틀:가지)]\n".repeat(50);
     let started = Instant::now();
     let m = render(&doc, &plain(), &t);
-    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(started.elapsed() < LIMIT);
     let mut s = Vec::new();
     statuses(&m.blocks, &mut s);
     assert_eq!(s.iter().filter(|x| **x == TemplateStatus::Ok).count(), 2_000);
@@ -168,4 +172,41 @@ fn a_template_page_shows_its_parameters_and_cannot_include_itself() {
     let mut s = Vec::new();
     statuses(&m.blocks, &mut s);
     assert_eq!(s, [TemplateStatus::Cycle]);
+}
+
+#[test]
+fn template_text_that_multiplies_stops_at_the_size_limit() {
+    // 최종 검토 2 — 인자를 다섯 번씩 넘기는 틀 여덟 단: 30바이트 인자가 일곱째 단에서 30 × 5^8 ≈ 11.7MB가 된다.
+    let mut t = BTreeMap::new();
+    for d in 0..8 {
+        t.insert(format!("틀:T{d}"), format!("[include(틀:T{}, a={})]", d + 1, "@a@".repeat(5)));
+    }
+    t.insert("틀:T8".to_string(), "@a@".to_string());
+    let started = Instant::now();
+    let m = render(&format!("[include(틀:T0, a={})]", "가".repeat(10)), &plain(), &t);
+    assert!(started.elapsed() < LIMIT, "{:?}", started.elapsed());
+    let mut s = Vec::new();
+    statuses(&m.blocks, &mut s);
+    assert_eq!(s.last(), Some(&TemplateStatus::TooLarge), "{s:?}");
+    assert!(serde_json::to_string(&m).unwrap().len() < MAX_TEMPLATE_BYTES);
+}
+
+#[test]
+fn a_template_over_the_size_limit_is_refused_quickly_and_read_once() {
+    struct Counting(Cell<usize>, String);
+    impl Templates for Counting {
+        fn source(&self, _: &ObjectRef) -> Option<String> {
+            self.0.set(self.0.get() + 1);
+            Some(self.1.clone())
+        }
+    }
+    let big = Counting(Cell::new(0), "가".repeat(MAX_TEMPLATE_BYTES / 3 + 1));
+    let started = Instant::now();
+    let m = render(&"[include(틀:큰 틀)]\n".repeat(2_000), &plain(), &big);
+    assert!(started.elapsed() < LIMIT, "{:?}", started.elapsed());
+    let mut s = Vec::new();
+    statuses(&m.blocks, &mut s);
+    assert_eq!(s.len(), 2_000);
+    assert!(s.iter().all(|x| *x == TemplateStatus::TooLarge));
+    assert_eq!(big.0.get(), 1); // 한 번 그리는 동안 같은 틀은 한 번만 읽는다
 }

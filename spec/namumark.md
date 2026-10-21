@@ -48,13 +48,14 @@
 
 - `[include(틀:이름, 인자=값)]`는 저장할 때 펼쳐 모델에 굳힌다. 틀 원문의 `@이름@` · `@이름=기본값@`을 **해석하기 전에** 인자 글로 채운다(인자가 없고 기본값도 없으면 빈 글).
 - 틀이 넘겨주기면 **한 번** 따라간다(이름 바꾼 틀). 두 번은 따르지 않는다(`missing`).
-- 멈춤: 펼치는 사슬에 이미 있는 틀(`cycle`) · 깊이 8(`too_deep`) · 한 문서에서 2,000번(`too_many`) · 없는 틀(`missing`). 그 자리는 `blocks`가 빈 `template` 블록.
+- 멈춤: 펼치는 사슬에 이미 있는 틀(`cycle`) · 깊이 8(`too_deep`) · 한 문서에서 2,000번(`too_many`) · 한 문서에서 읽은 틀 원문과 채운 글이 합쳐 8 MiB를 넘음(`too_large` — 인자를 여러 번 넘겨 단마다 글이 불어나는 틀) · 없는 틀(`missing`). 그 자리는 `blocks`가 빈 `template` 블록.
+- 한 번 그리는 동안 같은 틀은 한 번만 읽는다.
 - 틀의 각주는 문서의 각주와 함께 **그린 차례로** 번호를 다시 매긴다. 틀의 분류는 `template_categories`(집은 본문 첫 분류).
 - `templates`는 펼치려 한 틀 전부(없던 것 · 넘겨주기 대상 포함) — 그 틀이 생기거나 바뀌면 이 문서를 다시 그린다(설계 5-5).
 
 ## 한계
 
-중첩 깊이 32 · 짝 찾기 훑기 예산 `64 × 원문 바이트 + 1,000,000`(넘으면 남은 표식은 글자) · 줄 안 매크로 · `@인자@` 찾기 창 256바이트 · 표 가로 합치기 64 · 세로 합치기 256.
+중첩 깊이 32 · 짝 찾기 훑기 예산 `64 × 원문 바이트 + 1,000,000`(넘으면 남은 표식은 글자 — 여러 줄 `{{{` 블록은 닫는 줄까지만 센다. 펼친 틀은 예산을 따로 받지 않고 `1,000,000 + 64 × 채운 틀 글 바이트` 하나를 나눠 쓴다) · 줄 안 매크로 · `@인자@` 찾기 창 256바이트 · 표 가로 합치기 64 · 세로 합치기 256.
 
 ## 그리기 모델 JSON(판 1)
 
@@ -78,7 +79,7 @@
 | `table` | `caption`: [인라인]\|null · `rows`: [[`{"col", "row", "align"(start\|center\|end), "inl"}`]] |
 | `code` | `lang`\|null `text` |
 | `rule` · `toc` · `footnotes` | — |
-| `template` | `target` `status`(`ok` `missing` `cycle` `too_deep` `too_many`) `blocks` |
+| `template` | `target` `status`(`ok` `missing` `cycle` `too_deep` `too_many` `too_large`) `blocks` |
 | `embed` | `target` `options` |
 | `front` | `name` `arg`\|null |
 | `timeline_strip` | `entity` `range`\|null |

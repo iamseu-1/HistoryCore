@@ -1,9 +1,12 @@
 //! 깊거나 이상한 입력에서도 멈추지 않고, 스택이 넘치지 않고, 정해진 시간 안에 끝난다(Review Focus 1 · 2 · 5, 설계 9-3 퍼징).
 use history_corpus::{Corpus, CorpusSpec, Ns, Rng, TextPool};
-use history_namumark::{parse, plain_inline, Block, Options};
+use history_namumark::{parse, plain_inline, render, Block, Options, RenderOptions};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-const LIMIT: Duration = Duration::from_secs(3);
+/// 시간 한계 — 디버그 짓기는 느리고 CI는 붐벼 "멈추지 않는다"만 넉넉히(30초) 보고,
+/// 빠르기는 릴리스로 3초 안을 본다(CI가 `--release`로 이 파일을 한 번 더 돌린다 — 최종 검토 3).
+const LIMIT: Duration = if cfg!(debug_assertions) { Duration::from_secs(30) } else { Duration::from_secs(3) };
 
 fn timed(label: &str, src: &str) -> history_namumark::Document {
     let t = Instant::now();
@@ -31,11 +34,9 @@ fn all_text(blocks: &[Block]) -> String {
 #[test]
 fn five_thousand_nested_list_levels_do_not_overflow_the_stack() {
     // 옛 Dart의 목록 쌓기는 깊이를 재지 않았다.
-    // 들여쓰기가 단마다 늘어 입력이 12.5MB다 — 이 검사는 스택을 보는 것이라 시간은 넉넉히(10초) 둔다.
+    // 들여쓰기가 단마다 늘어 입력이 12.5MB다.
     let src: String = (1..=5_000).map(|k| format!("{}* {k}", " ".repeat(k))).collect::<Vec<_>>().join("\n");
-    let t = Instant::now();
-    let d = parse(&src, &Options::default());
-    assert!(t.elapsed() < Duration::from_secs(10), "5,000단 목록: {:?}", t.elapsed());
+    let d = timed("5,000단 목록", &src);
     assert!(matches!(d.blocks.first(), Some(Block::List { .. })));
     assert!(all_text(&d.blocks).contains("5000"));
 }
@@ -99,6 +100,15 @@ fn random_markup_soup_never_panics() {
         "<-2>", "<|2>", "<:>", "가", "鶴", "𪄃", "😀", "\u{3000}", "\u{1100}", "\u{1161}", " ", "임진왜란", "분류:조선", "파일:a.png",
         "연표:x", "#개요", "https://a.b", "\r\n", "## 주석\n",
     ];
+    // 그리기 모델까지 — 틀 채우기 · 넘겨주기 · 각주 다시 매김 · UTF-16 위치(최종 검토 4).
+    let templates: BTreeMap<String, String> = [
+        ("틀:가", "[[@a@]] @b=기본@[* 틀 각주 @a@]\n[include(틀:나, a=@a@@a@)]\n[[분류:틀 분류]]"),
+        ("틀:나", "#넘겨주기 틀:다"),
+        ("틀:다", "== @a@ ==\n || @a@ || [*x 다] ||\n[include(틀:가, a=@a@)]"),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
     let mut rng = Rng::new(20261021);
     for case in 0..5_000 {
         let n = 1 + rng.below(300) as usize;
@@ -107,6 +117,9 @@ fn random_markup_soup_never_panics() {
             let r = std::panic::catch_unwind(|| {
                 let d = parse(&src, &Options { template, current: Some("가/나".into()), ..Options::default() });
                 let _ = all_text(&d.blocks);
+                let m = render(&src, &RenderOptions { title: Some("가/나".into()), template }, &templates);
+                let units = d.source.encode_utf16().count();
+                assert!(m.sections.iter().all(|s| s.start <= s.end && s.end <= units), "{:?}", m.sections);
             });
             assert!(r.is_ok(), "{case}번째(틀 {template})에서 멈춤: {src:?}");
         }

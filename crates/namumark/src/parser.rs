@@ -27,7 +27,15 @@ impl Default for Options {
 /// 원문을 구문 트리로. 줄끝은 `\n`으로 맞춘다.
 pub fn parse(source: &str, options: &Options) -> Document {
     let normalized = source.replace("\r\n", "\n").replace('\r', "\n");
-    Run::new(options.clone(), normalized).run()
+    Run::new(options.clone(), normalized).run().0
+}
+
+/// `parse`와 같되 짝 찾기 예산을 주고 남은 예산을 돌려받는다 — 그리기 모델이 펼치는 틀 모두가 예산 하나를 나눠 쓴다.
+pub(crate) fn parse_budgeted(source: &str, options: &Options, budget: usize) -> (Document, usize) {
+    let normalized = source.replace("\r\n", "\n").replace('\r', "\n");
+    let mut run = Run::new(options.clone(), normalized);
+    run.budget = budget;
+    run.run()
 }
 
 /// 첫 내용 줄이 `#넘겨주기 …`이면 그 대상(틀 펼치기가 이름 바뀐 틀을 따라갈 때).
@@ -288,7 +296,8 @@ impl Run {
         Run { opt, source, footnotes: Vec::new(), named: HashMap::new(), categories: Vec::new(), headings: Vec::new(), section_counter: 0, budget }
     }
 
-    fn run(mut self) -> Document {
+    /// 구문 트리와 남은 예산.
+    fn run(mut self) -> (Document, usize) {
         let lines = split_lines(&self.source);
         for line in &lines {
             let t = line.text.trim();
@@ -297,14 +306,14 @@ impl Run {
             }
             if let Some(c) = REDIRECT.captures(t) {
                 if let Some(target) = ObjectRef::parse(&c[1]) {
-                    return Document { source: self.source, blocks: Vec::new(), redirect: Some(target), categories: Vec::new(), sections: Vec::new(), footnotes: Vec::new() };
+                    return (Document { source: self.source, blocks: Vec::new(), redirect: Some(target), categories: Vec::new(), sections: Vec::new(), footnotes: Vec::new() }, self.budget);
                 }
             }
             break;
         }
         let mut blocks = self.blocks(&lines, 0, true);
         let sections = self.finish_headings(&mut blocks);
-        Document { source: self.source, blocks, redirect: None, categories: self.categories, sections, footnotes: self.footnotes }
+        (Document { source: self.source, blocks, redirect: None, categories: self.categories, sections, footnotes: self.footnotes }, self.budget)
     }
 
     /// 문단 번호를 매기고 원문 범위를 정한다.
@@ -619,20 +628,42 @@ impl Run {
         if self.budget == 0 {
             return 0;
         }
+        // 줄을 하나씩 이으며 짝을 이어 훑는다(`match_braces`와 같은 규칙). 닫힌 블록은 닫는 줄까지만,
+        // 닫히지 않은 `{{{`만 문서 끝까지를 예산에서 뺀다 — 접기가 수백 개인 긴 문서도 뒤의 표식이 산다(최종 검토 1).
         let mut all = String::new();
         let mut starts = Vec::new();
-        for l in &lines[i..] {
-            if all.len() > self.budget {
-                // 닫히지 않은 `{{{` 줄이 수만 개 — 남은 줄을 매번 잇지 않는다.
-                self.budget = 0;
-                return 0;
-            }
+        let (mut nest, mut p) = (0usize, lead);
+        let mut close = None;
+        'lines: for l in &lines[i..] {
             starts.push(all.len());
             all.push_str(&l.text);
             all.push('\n');
+            let b = all.as_bytes();
+            while p < b.len() {
+                if b[p..].starts_with(b"{{{") {
+                    nest += 1;
+                    p += 3;
+                } else if b[p..].starts_with(b"}}}") {
+                    nest = nest.saturating_sub(1);
+                    if nest == 0 {
+                        close = Some(p);
+                        break 'lines;
+                    }
+                    p += 3;
+                } else if b[p] == b'\\' {
+                    p += 2;
+                } else {
+                    p += 1;
+                }
+            }
+            if p - lead > self.budget {
+                // 닫히지 않은 `{{{` 줄이 수만 개 — 예산이 떨어졌다.
+                self.budget = 0;
+                return 0;
+            }
         }
-        self.budget = self.budget.saturating_sub(all.len());
-        let Some(close) = self.match_braces(all.as_bytes(), lead) else {
+        self.budget = self.budget.saturating_sub(p - lead);
+        let Some(close) = close else {
             return 0;
         };
         let end_line = starts.iter().rposition(|&s| s <= close).unwrap_or(0);

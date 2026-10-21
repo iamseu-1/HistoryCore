@@ -26,6 +26,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Rust 검사
         run: cargo test --locked --workspace
+      - name: 해석기 빠르기(릴리스 — 다지기 검사의 3초 한계는 릴리스에서만 빡빡하다)
+        run: cargo test --locked --release -p history_namumark --test hardening --test model
       - name: 엔진 짓기(Windows)
         run: ./tools/build-native.ps1
       - uses: subosito/flutter-action@v2
