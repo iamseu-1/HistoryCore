@@ -1,5 +1,6 @@
 //! 서재 일의 다리 — `library.*` · `doc.*` · `rev.*`(spec/engine-api.md). 열린 서재는 손잡이 표에 든다.
 use history_library::{Doc, DocId, DocSummary, Error, Hlc, Library, Namespace, RevId, RevInfo, Saved};
+use history_namumark::{render, NoTemplates, ObjectRef, RenderOptions, Templates};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,7 @@ pub fn handle_op(op: &str, req: &Value) -> Option<Value> {
     let answer = match op {
         "library.open" => open(req),
         "library.close" => close(req),
+        "namumark.parse" => parse_op(req),
         op if LIBRARY_OPS.contains(&op) => with_library(req, |lib| run(op, lib, req)),
         _ => return None,
     };
@@ -192,4 +194,30 @@ fn run(op: &str, lib: &mut Library, req: &Value) -> Answer {
         }
         other => Err(bad(format!("모르는 서재 op: {other}"))),
     }
+}
+
+/// 열린 서재에서 틀 원문을 읽는다 — 서재에 담을 수 있는 이름공간(문서 · 분류 · 틀 · 파일 · 대문)만. 같은 제목이 둘이면 먼저 만든 것.
+struct LibraryTemplates<'a>(&'a Library);
+
+impl Templates for LibraryTemplates<'_> {
+    fn source(&self, target: &ObjectRef) -> Option<String> {
+        let ns = Namespace::ALL.into_iter().find(|n| n.prefix() == target.ns)?;
+        let first = self.0.by_title(ns, &target.key).ok()?.into_iter().next()?;
+        self.0.get(first.id).ok()?.map(|d| d.body)
+    }
+}
+
+/// 저장하지 않은 글의 그리기 모델(편집기 미리보기 · spec/namumark.md). `handle`이 있으면 그 서재의 틀을 펼친다.
+fn parse_op(req: &Value) -> Answer {
+    let text = text(req, "text")?.to_string();
+    let options = RenderOptions {
+        title: req.get("title").and_then(Value::as_str).map(str::to_string),
+        template: req.get("ns").and_then(Value::as_str) == Some(Namespace::Template.code()),
+    };
+    let model = if req.get("handle").is_some() {
+        with_library(req, |lib| Ok(json!(render(&text, &options, &LibraryTemplates(lib)))))?
+    } else {
+        json!(render(&text, &options, &NoTemplates))
+    };
+    Ok(json!({"ok": true, "model": model}))
 }

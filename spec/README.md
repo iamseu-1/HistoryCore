@@ -3,5 +3,6 @@
 설계 4-1의 `spec/`. P2부터 채운다: 서재 형식(`library-format.md`) · 드라이브 형식(`drive-format.md`) · 창구 질의(`windows-api.md`) · 나무마크 문법(`namumark.md`).
 - [서재 형식](library-format.md) — `library.db`(P2-1)
 - [엔진 질의](engine-api.md) — 다리 op 전체(P2-1에서 정함, 몇은 뒤 계획에서 채움)
+- [나무마크 문법과 그리기 모델](namumark.md) — 해석기 · 모델 JSON(P2-2)
 
 지금 정해진 것 — 엔진 다리: `hc_call(요청 JSON) → 답 JSON`. 답은 늘 `ok`를 가진다. `{"op":"version"}` → `{"ok":true,"engine":"0.0.1","abi":1}`.

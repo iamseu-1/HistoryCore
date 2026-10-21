@@ -1,6 +1,6 @@
 # 엔진 질의 약속
 
-다리 `hc_call(요청 JSON) → 답 JSON`(UTF-8). 앱은 이 문서만 보고 엔진을 부른다. P2-1이 정한 것은 **됨**, 뒤 계획이 채울 것은 **예정**(모양은 그 계획에서 굳히고 이 문서를 고친다 — 아직 출시 전이라 ABI 판은 1 그대로).
+다리 `hc_call(요청 JSON) → 답 JSON`(UTF-8). 앱은 이 문서만 보고 엔진을 부른다. P2-1 · P2-2가 정한 것은 **됨**, 뒤 계획이 채울 것은 **예정**(모양은 그 계획에서 굳히고 이 문서를 고친다 — 아직 출시 전이라 ABI 판은 1 그대로).
 
 ## 약속
 
@@ -22,7 +22,7 @@
 | `newer_format` | 더 새 형식의 서재 — 건드리지 않았다 |
 | `corrupt` · `sqlite` · `io` | 저장소 · 파일 문제 |
 
-## 됨 (P2-1)
+## 됨 (P2-1 · P2-2)
 
 | op | 요청 | 답 |
 | --- | --- | --- |
@@ -38,12 +38,12 @@
 | `doc.by_title` | `handle` · `ns` · `title` | `docs`: [`id` · `ns` · `title` · `head` · `created` · `updated`] — 만든 차례, 지운 것 뺌 |
 | `doc.history` | `handle` · `doc` · `limit`?(50, 많아야 1000) · `before`?(hlc) | `revisions`: [`id` · `doc` · `parent` · `parent2` · `device` · `hlc` · `kind`(`content`/`deleted`) · `ns` · `title` · `message` · `len`] — 새 것부터 |
 | `rev.get` | `handle` · `rev` | `revision`: 위 판 정보 + `body` |
+| `namumark.parse` | `text` · `title`? · `ns`?(`template`이면 틀 문서로 봄) · `handle`?(있으면 그 서재의 틀을 펼침) | `model`: 그리기 모델(spec/namumark.md) |
 
 ## 예정
 
 | op | 계획 | 하는 일 |
 | --- | --- | --- |
-| `namumark.parse` | P2-2 | 저장하지 않은 글의 그리기 모델(편집기 미리보기) |
 | `doc.open` | P2-3 | 저장 때 굳힌 그리기 모델 · 분류 · 각주 · 넘겨주기 따라가기(한 번) |
 | `titles.exist` | P2-3 | 제목 목록 → 있는 문서 ID(설계 5-6, 링크 색) |
 | `search.titles` · `search.body` | P2-3 | 제목 앞부분 · 본문 찾기(한글 · 한자 2글자 조각), 첫 n건 |

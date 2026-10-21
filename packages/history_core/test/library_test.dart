@@ -92,4 +92,20 @@ void main() {
     );
     await lib.close();
   }, skip: windowsOnly);
+
+  test('미리보기: 서재의 틀을 펼친 그리기 모델', () async {
+    final lib = await Library.open(core, dir.path);
+    await lib.create(Namespace.template, '해전 정보', "'''@이름@'''");
+    final model = await lib.render('[include(틀:해전 정보, 이름=한산도)]\n𪄃 鶴');
+    expect(model['version'], 1);
+    final block = (model['blocks'] as List).first as Map<String, dynamic>;
+    expect(block['t'], 'template');
+    expect(block['status'], 'ok');
+    expect(((((block['blocks'] as List).first as Map)['inl'] as List).first as Map)['inl'], [
+      {'t': 'text', 's': '한산도'},
+    ]);
+    final page = await lib.render('@이름=미상@', title: '해전 정보', ns: Namespace.template);
+    expect(((((page['blocks'] as List).first as Map)['inl'] as List).first as Map)['t'], 'param');
+    await lib.close();
+  }, skip: windowsOnly);
 }

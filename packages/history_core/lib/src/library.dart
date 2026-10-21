@@ -187,6 +187,11 @@ class Library {
     }
   }
 
+  /// 저장하지 않은 글의 그리기 모델(편집기 미리보기). 틀은 이 서재에서 읽는다 — 모양은 spec/namumark.md.
+  /// [ns]가 [Namespace.template]이면 틀 문서 자체로 보고 `@인자@`를 자리로 남긴다.
+  Future<Map<String, dynamic>> render(String text, {String? title, Namespace ns = Namespace.doc}) async =>
+      (await _call('namumark.parse', {'text': text, 'title': title, 'ns': ns.name}))['model'] as Map<String, dynamic>;
+
   Future<Counts> counts() async => Counts._(await _call('library.counts'));
 
   Future<void> close() async {
