@@ -8,6 +8,8 @@ use crate::title::normalize_title;
 use rusqlite::{params, Connection, OptionalExtension};
 
 const ZSTD_LEVEL: i32 = 3;
+/// 이름공간 · 지움별 문서 수.
+const COUNTS_SQL: &str = "SELECT ns, deleted, count(*) FROM doc GROUP BY ns, deleted";
 const REV_COLUMNS: &str = "id, doc, parent, parent2, device, hlc, kind, ns, title, message, len";
 
 struct Head {
@@ -223,7 +225,7 @@ impl Library {
 
     pub fn counts(&self) -> Result<Counts> {
         let mut counts = Counts::default();
-        let mut st = self.db.prepare_cached("SELECT ns, deleted, count(*) FROM doc GROUP BY ns, deleted")?;
+        let mut st = self.db.prepare_cached(COUNTS_SQL)?;
         let mut rows = st.query([])?;
         while let Some(r) = rows.next()? {
             let (ns, deleted, n): (Namespace, bool, i64) = (r.get(0)?, r.get(1)?, r.get(2)?);
@@ -240,6 +242,30 @@ impl Library {
 #[cfg(test)]
 mod tests {
     use crate::{Error, Library, Namespace};
+    use rusqlite::Connection;
+
+    /// EXPLAIN QUERY PLAN의 설명 열을 한 줄로.
+    fn plan(sql: &str) -> String {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(crate::store::SCHEMA).unwrap();
+        let mut st = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let rows = st.query_map([], |r| r.get::<_, String>(3)).unwrap();
+        rows.map(|r| r.unwrap()).collect::<Vec<_>>().join(" / ")
+    }
+
+    #[test]
+    fn counting_docs_reads_only_an_index() {
+        // 앱이 켤 때마다 센다 — 100만 편에서 문서마다 표를 찾아가면 10초가 넘는다(최종 검토 #2).
+        let p = plan(super::COUNTS_SQL);
+        assert!(p.contains("COVERING INDEX") && !p.contains("TEMP B-TREE"), "{p}");
+    }
+
+    #[test]
+    fn the_last_clock_reading_comes_straight_from_an_index() {
+        // 열 때마다 묻는다 — 판 기록 전체를 훑으면 기록이 쌓일수록 시작이 느려진다(최종 검토 #4).
+        let p = plan(crate::store::LAST_HLC_SQL);
+        assert!(p.contains("rev_hlc"), "{p}");
+    }
 
     #[test]
     fn a_write_cut_after_the_revision_leaves_no_half_state() {

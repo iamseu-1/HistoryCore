@@ -16,7 +16,7 @@ pub const FORMAT: i64 = 1;
 /// `PRAGMA application_id` — "HCLB". 이 값이 아닌 SQLite 파일은 서재로 열지 않는다.
 const APPLICATION_ID: i64 = 0x4843_4C42;
 
-const SCHEMA: &str = "
+pub(crate) const SCHEMA: &str = "
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE doc(
   id      BLOB PRIMARY KEY,
@@ -28,6 +28,7 @@ CREATE TABLE doc(
   deleted INTEGER NOT NULL
 ) WITHOUT ROWID;
 CREATE INDEX doc_title ON doc(ns, title, created);
+CREATE INDEX doc_ns_deleted ON doc(ns, deleted);
 CREATE TABLE rev(
   seq     INTEGER PRIMARY KEY,
   id      BLOB NOT NULL UNIQUE,
@@ -44,7 +45,11 @@ CREATE TABLE rev(
   body    BLOB NOT NULL
 );
 CREATE INDEX rev_doc ON rev(doc, hlc);
+CREATE INDEX rev_hlc ON rev(hlc);
 ";
+
+/// 열 때 시계를 잇는 마지막 판 시각.
+pub(crate) const LAST_HLC_SQL: &str = "SELECT COALESCE(MAX(hlc), 0) FROM rev";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryInfo {
@@ -208,7 +213,7 @@ impl Library {
             format: FORMAT,
             folder,
         };
-        let last: i64 = db.query_row("SELECT COALESCE(MAX(hlc), 0) FROM rev", [], |r| r.get(0))?;
+        let last: i64 = db.query_row(LAST_HLC_SQL, [], |r| r.get(0))?;
         Ok(Library { db, info, clock: Clock::new(Hlc(last as u64), wall), fail_after_rev: false })
     }
 
