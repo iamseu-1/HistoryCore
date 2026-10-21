@@ -1,6 +1,6 @@
 //! 검색 색인과 미리보기에 쓰는 글자만 뽑는다 — 옛 Dart `plain.dart`.
 use crate::ast::{Block, Document, Inline};
-use crate::refs::ObjectRef;
+use crate::refs::{ObjectRef, TIMELINE};
 use std::collections::HashSet;
 
 pub fn plain_inline(nodes: &[Inline]) -> String {
@@ -197,4 +197,52 @@ impl LinkWalk {
             }
         }
     }
+}
+
+/// 이 문서가 잇는 연표 항목ID — 연표 링크 `[[연표:…]]`와 연표 띠, 나온 차례, 겹침 없이(설계 5-5 「연표 연결」).
+pub fn timeline_entities(doc: &Document) -> Vec<String> {
+    fn inlines(nodes: &[Inline], out: &mut Vec<String>) {
+        for n in nodes {
+            match n {
+                Inline::Link { target, label } => {
+                    if target.ns == TIMELINE && !target.key.is_empty() && !out.contains(&target.key) {
+                        out.push(target.key.clone());
+                    }
+                    if let Some(l) = label {
+                        inlines(l, out);
+                    }
+                }
+                Inline::Styled { children, .. } | Inline::Size { children, .. } => inlines(children, out),
+                Inline::Url { label: Some(l), .. } => inlines(l, out),
+                _ => {}
+            }
+        }
+    }
+    fn blocks(list: &[Block], out: &mut Vec<String>) {
+        for b in list {
+            match b {
+                Block::Heading { children, .. } | Block::Paragraph { children, .. } => inlines(children, out),
+                Block::List { items, .. } => items.iter().for_each(|i| blocks(i, out)),
+                Block::Quote(c) | Block::Indent { children: c, .. } | Block::Fold { children: c, .. } => blocks(c, out),
+                Block::Table { caption, rows } => {
+                    if let Some(c) = caption {
+                        inlines(c, out);
+                    }
+                    rows.iter().flatten().for_each(|cell| inlines(&cell.children, out));
+                }
+                Block::TimelineStrip { entity, .. } => {
+                    if !out.contains(entity) {
+                        out.push(entity.clone());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    blocks(&doc.blocks, &mut out);
+    for f in &doc.footnotes {
+        inlines(&f.children, &mut out);
+    }
+    out
 }

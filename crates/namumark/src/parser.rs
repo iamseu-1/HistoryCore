@@ -36,6 +36,12 @@ static LIST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^( +)(\*|1\.|a\.|A\
 static BLOCK_MACRO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\[(목차|tableofcontents|각주|footnote|clearfix)\]$").unwrap());
 static INCLUDE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\[include\((.*)\)\]$").unwrap());
 static EMBED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^\[embed\((.*)\)\]$").unwrap());
+/// 대문 매크로(설계 8-2) — 한 줄 전체일 때만.
+static FRONT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\[(주제 바로가기|오늘의 문서|오늘의 역사|알고 계셨나요|최근 바뀐 문서|만들 문서|쓰는 리듬|최근 찾은 한자)(?:\(([^)]*)\))?\]$").unwrap()
+});
+/// 문서 속 연표 띠 `[연표(<항목ID>, 범위=…)]`(설계 7-1).
+static STRIP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[연표\((.*)\)\]$").unwrap());
 pub(crate) static MACRO: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\[([A-Za-z가-힣]+)(?:\(([^\]]*)\))?\]").unwrap());
 pub(crate) static PARAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^@([^@\s=]+)(?:=([^@\n]*))?@").unwrap());
 static SIZE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([+-])([1-5])\s").unwrap());
@@ -413,6 +419,21 @@ impl Run {
                 out.push(Block::Indent { depth: min_indent, children: inner });
                 continue;
             }
+            if let Some(c) = FRONT.captures(trimmed) {
+                let arg = c.get(2).map(|g| g.as_str().trim()).filter(|a| !a.is_empty()).map(str::to_string);
+                out.push(Block::Front { name: c[1].to_string(), arg });
+                i += 1;
+                continue;
+            }
+            if let Some(c) = STRIP.captures(trimmed) {
+                let args = split_args(&c[1]);
+                if let Some(entity) = args.first().filter(|e| !e.is_empty()) {
+                    let range = key_values(&args[1..]).get("범위").cloned();
+                    out.push(Block::TimelineStrip { entity: entity.clone(), range });
+                    i += 1;
+                    continue;
+                }
+            }
             if let Some(c) = BLOCK_MACRO.captures(trimmed) {
                 let name = c[1].to_lowercase();
                 if name == "목차" || name == "tableofcontents" {
@@ -473,7 +494,7 @@ impl Run {
             return true;
         }
         let trimmed = t.trim();
-        if BLOCK_MACRO.is_match(trimmed) || INCLUDE.is_match(trimmed) || EMBED.is_match(trimmed) {
+        if BLOCK_MACRO.is_match(trimmed) || INCLUDE.is_match(trimmed) || EMBED.is_match(trimmed) || FRONT.is_match(trimmed) || STRIP.is_match(trimmed) {
             return true;
         }
         if t.starts_with("{{{") && self.match_braces(t.as_bytes(), t.find("{{{").unwrap_or(0)).is_none() {
