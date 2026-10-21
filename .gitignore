@@ -1,0 +1,5 @@
+/target
+/packages/history_core/native/
+/packages/history_core/.dart_tool/
+/packages/history_core/build/
+/bench/work/
