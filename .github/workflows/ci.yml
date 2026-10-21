@@ -1,0 +1,60 @@
+name: ci
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: 3.47.7
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Rust 검사 · Windows 엔진 · 플러그인
+    runs-on: windows-2025
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.94.1'
+      - uses: Swatinem/rust-cache@v2
+      - name: Rust 검사
+        run: cargo test --locked --workspace
+      - name: 엔진 짓기(Windows)
+        run: ./tools/build-native.ps1
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: 플러그인 검사
+        working-directory: packages/history_core
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+  android:
+    name: Android 엔진(arm64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: android-actions/setup-android@v4
+      - name: NDK 28.2
+        run: sdkmanager --install "ndk;28.2.13676358"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.94.1'
+          targets: aarch64-linux-android
+      - uses: Swatinem/rust-cache@v2
+      - name: 엔진 짓기(Android)
+        shell: pwsh
+        run: ./tools/build-native.ps1 -Android -SkipWindows
+      - run: test -f packages/history_core/native/android/arm64-v8a/libhistory_core.so
