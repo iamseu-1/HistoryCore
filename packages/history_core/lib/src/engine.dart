@@ -27,12 +27,13 @@ class EngineVersion {
   final int abi;
 }
 
-/// 엔진이 돌려준 오류.
+/// 엔진이 돌려준 오류. [code]는 다리의 짧은 이름(spec/engine-api.md) — 없을 수 있다.
 class HistoryCoreError implements Exception {
-  HistoryCoreError(this.message);
+  HistoryCoreError(this.message, {this.code});
   final String message;
+  final String? code;
   @override
-  String toString() => 'HistoryCoreError: $message';
+  String toString() => code == null ? 'HistoryCoreError: $message' : 'HistoryCoreError($code): $message';
 }
 
 /// 엔진 라이브러리를 열지 못함(파일 없음 · 깨짐 · 다른 아키텍처).

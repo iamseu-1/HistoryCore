@@ -3,13 +3,9 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:history_core/history_core.dart';
 
-/// `tools/build-native.ps1`이 놓은 DLL(또는 HISTORY_CORE_LIBRARY).
-String builtLibrary() =>
-    Platform.environment['HISTORY_CORE_LIBRARY'] ??
-    '${Directory.current.path}${Platform.pathSeparator}native${Platform.pathSeparator}windows-x64${Platform.pathSeparator}history_core.dll';
+import 'support.dart';
 
 void main() {
-  final windowsOnly = Platform.isWindows ? false : 'Windows에서만 — 미리 지은 DLL로 돈다';
 
   test('엔진 판 번호를 isolate 너머로 받는다', () async {
     final core = await HistoryCore.start(libraryPath: builtLibrary());
