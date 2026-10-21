@@ -9,9 +9,15 @@ const PRAGMAS: &str = "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;";
 const SCHEMA: &str = "
 CREATE TABLE doc(id INTEGER PRIMARY KEY, ns INTEGER NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, grp TEXT, updated INTEGER NOT NULL, UNIQUE(ns, title));
 CREATE INDEX doc_updated ON doc(updated DESC);
+CREATE INDEX doc_grp ON doc(ns, grp);
 CREATE TABLE cat_member(cat TEXT NOT NULL, doc INTEGER NOT NULL, PRIMARY KEY(cat, doc)) WITHOUT ROWID;
 CREATE VIRTUAL TABLE fts USING fts5(body, content='doc', content_rowid='id', tokenize='trigram');
 ";
+
+/// 대문 모음: 큰 갈래별 일반 문서 수.
+const GROUPS_SQL: &str = "SELECT COALESCE(grp, '분류 안 됨'), COUNT(*) FROM doc WHERE ns = 0 GROUP BY 1 ORDER BY 2 DESC";
+/// 대문 모음: 최근 바뀐 일반 문서 10.
+const RECENT_SQL: &str = "SELECT id FROM doc WHERE ns = 0 ORDER BY updated DESC LIMIT 10";
 
 pub struct NaiveSqlite {
     dir: PathBuf,
@@ -143,11 +149,11 @@ impl Library for NaiveSqlite {
     }
 
     fn home_aggregates(&self) -> Result<Aggregates> {
-        let mut st = self.db.prepare_cached("SELECT COALESCE(grp, '분류 안 됨'), COUNT(*) FROM doc WHERE ns = 0 GROUP BY 1 ORDER BY 2 DESC")?;
+        let mut st = self.db.prepare_cached(GROUPS_SQL)?;
         let groups = st
             .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut st = self.db.prepare_cached("SELECT id FROM doc WHERE ns = 0 ORDER BY updated DESC LIMIT 10")?;
+        let mut st = self.db.prepare_cached(RECENT_SQL)?;
         let recent = ids(st.query_map([], |r| r.get::<_, u32>(0))?)?;
         Ok(Aggregates { groups, recent })
     }
@@ -166,5 +172,26 @@ impl Library for NaiveSqlite {
             }
         }
         Ok(total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// EXPLAIN QUERY PLAN의 설명 열을 한 줄로.
+    fn plan(db: &Connection, sql: &str) -> String {
+        let mut st = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let rows = st.query_map([], |r| r.get::<_, String>(3)).unwrap();
+        rows.map(|r| r.unwrap()).collect::<Vec<_>>().join(" / ")
+    }
+
+    #[test]
+    fn home_groups_are_counted_from_an_index_not_the_bodies() {
+        // 대문 모음이 본문(수 KB, 넘침 쪽)을 훑으면 기준 수치가 SQLite의 바닥이 아니라 빠진 색인을 잰다.
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(SCHEMA).unwrap();
+        let p = plan(&db, GROUPS_SQL);
+        assert!(p.contains("COVERING INDEX"), "{p}");
     }
 }
