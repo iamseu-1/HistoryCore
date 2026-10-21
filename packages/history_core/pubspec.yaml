@@ -1,0 +1,26 @@
+name: history_core
+description: HistoryCore 엔진의 Flutter 다리 — 미리 지은 엔진을 싣고 전용 isolate에서 부른다.
+version: 0.0.1
+publish_to: none
+
+environment:
+  sdk: ^3.13.0
+  flutter: ">=3.47.0"
+
+dependencies:
+  ffi: ^2.2.0
+  flutter:
+    sdk: flutter
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  lints: ^6.1.0
+
+flutter:
+  plugin:
+    platforms:
+      android:
+        ffiPlugin: true
+      windows:
+        ffiPlugin: true

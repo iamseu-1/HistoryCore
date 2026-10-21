@@ -1,0 +1,54 @@
+// 엔진 .so는 미리 지어 둔 것을 싣기만 한다(NDK로 짓지 않는다).
+
+group = "io.github.seugg.history_core"
+version = "1.0"
+
+buildscript {
+    repositories {
+        google()
+        mavenCentral()
+    }
+
+    dependencies {
+        // The Android Gradle Plugin knows how to build native code with the NDK.
+        classpath("com.android.tools.build:gradle:9.1.0")
+    }
+}
+
+rootProject.allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+apply plugin: "com.android.library"
+
+android {
+    namespace = "io.github.seugg.history_core"
+    // 엔진 .so는 tools/build-native.ps1이 미리 지어 둔다(Rust). 앱 APK의 lib/<abi>/에 실린다.
+    sourceSets {
+        main {
+            jniLibs.srcDirs = ["../native/android"]
+        }
+    }
+
+    // Bumping the plugin compileSdk version requires all clients of this plugin
+    // to bump the version in their app.
+    compileSdk = 36
+
+    // Use the NDK version
+    // declared in /android/app/build.gradle file of the Flutter project.
+    // Replace it with a version number if this plugin requires a specific NDK version.
+    // (e.g. ndkVersion "23.1.7779620")
+    ndkVersion = android.ndkVersion
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    defaultConfig {
+        minSdk = 24
+    }
+}
