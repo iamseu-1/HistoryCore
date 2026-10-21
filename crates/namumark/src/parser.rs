@@ -30,6 +30,12 @@ pub fn parse(source: &str, options: &Options) -> Document {
     Run::new(options.clone(), normalized).run()
 }
 
+/// 첫 내용 줄이 `#넘겨주기 …`이면 그 대상(틀 펼치기가 이름 바뀐 틀을 따라갈 때).
+pub fn redirect_of(source: &str) -> Option<ObjectRef> {
+    let t = source.lines().map(str::trim).find(|t| !t.is_empty())?;
+    REDIRECT.captures(t).and_then(|c| ObjectRef::parse(&c[1]))
+}
+
 static RULE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-{4,9}\s*$").unwrap());
 static REDIRECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^#(?:redirect|넘겨주기)\s+(.+?)\s*$").unwrap());
 static LIST: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^( +)(\*|1\.|a\.|A\.|i\.|I\.)(?:#(\d+))? ?(.*)$").unwrap());
