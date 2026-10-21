@@ -9,6 +9,7 @@ pub mod error;
 pub mod hlc;
 pub mod ids;
 pub mod ns;
+pub mod store;
 pub mod title;
 
 pub use error::{Error, Result};
@@ -16,6 +17,7 @@ pub use hlc::{Clock, Hlc, WallClock};
 pub use ids::{DeviceId, DocId, LibraryId, RevId};
 pub use ns::{Namespace, RESERVED_PREFIXES};
 pub use title::{normalize_title, MAX_TITLE_CHARS};
+pub use store::{Counts, Doc, DocSummary, Library, LibraryInfo, RevInfo, RevKind, Renamed, Revision, Saved, FILE, FOLDER, FORMAT};
 
 #[cfg(test)]
 mod tests {
