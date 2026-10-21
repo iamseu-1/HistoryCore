@@ -70,3 +70,15 @@ fn titles_that_would_break_links_are_refused() {
         assert_eq!(e.code(), "bad_title", "{bad:?}");
     }
 }
+
+#[test]
+fn invisible_characters_do_not_make_a_second_title() {
+    // 웹에서 붙여 넣은 제목에 섞인 보이지 않는 글자(폭 없는 공백 · BOM · 무른 하이픈) 때문에 링크가 닿지 않는 문서가 따로 생기지 않게.
+    assert_eq!(normalize_title("임진왜란\u{200B}").unwrap(), "임진왜란");
+    assert_eq!(normalize_title("\u{FEFF}鶴").unwrap(), "鶴");
+    assert_eq!(normalize_title("임진\u{00AD}왜란\u{2060}").unwrap(), "임진왜란");
+    assert_eq!(normalize_title("👨\u{200D}👩\u{200D}👧").unwrap(), "👨\u{200D}👩\u{200D}👧"); // ZWJ 이모지는 그대로
+    for bad in ["\u{200B}", "가\u{202E}나", "가\u{2066}나", "가\u{200F}나", "가\u{2028}나", "가\u{2029}나"] {
+        assert_eq!(normalize_title(bad).err().unwrap_or_else(|| panic!("받아들임: {bad:?}")).code(), "bad_title", "{bad:?}");
+    }
+}
