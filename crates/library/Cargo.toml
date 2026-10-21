@@ -3,3 +3,9 @@ name = "history_library"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
+unicode-normalization = "0.1"
+uuid = { version = "1", features = ["v7"] }
+zstd = "0.13"
