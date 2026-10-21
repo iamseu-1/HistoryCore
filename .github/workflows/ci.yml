@@ -36,6 +36,7 @@ jobs:
       - name: 플러그인 검사
         working-directory: packages/history_core
         run: |
+          $PSNativeCommandUseErrorActionPreference = $true
           flutter pub get
           flutter analyze
           flutter test
@@ -58,3 +59,10 @@ jobs:
         shell: pwsh
         run: ./tools/build-native.ps1 -Android -SkipWindows
       - run: test -f packages/history_core/native/android/arm64-v8a/libhistory_core.so
+      - name: 폰 측정기 짓기(hc-bench, arm64 — 묶음 SQLite C도 NDK로 짓는다)
+        run: |
+          ndk="$ANDROID_HOME/ndk/28.2.13676358/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export CC_aarch64_linux_android="$ndk/aarch64-linux-android24-clang"
+          export AR_aarch64_linux_android="$ndk/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$ndk/aarch64-linux-android24-clang"
+          cargo build --locked --release -p history_bench --bin hc-bench --target aarch64-linux-android
