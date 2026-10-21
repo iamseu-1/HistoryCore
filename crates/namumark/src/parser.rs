@@ -81,6 +81,8 @@ pub(crate) struct Run {
     categories: Vec<String>,
     headings: Vec<HeadingInfo>,
     section_counter: usize,
+    /// 짝 찾기 훑기 예산(바이트). 떨어지면 남은 표식은 글자로 남는다 — 닫히지 않은 표식 수만 개에도 O(n).
+    budget: usize,
 }
 
 /// 문단 제목 `== 제목 ==` · 접힌 `==# 제목 #==`. Dart 정규식 `^(={1,6})(#?)\s*(.+?)\s*\2\1\s*$`를
@@ -143,6 +145,15 @@ fn has_content(inlines: &[Inline]) -> bool {
         Inline::Break => false,
         _ => true,
     })
+}
+
+/// `s[i..]`에서 많아야 `n`바이트 — 문자 경계에서 자른다(줄 안 매크로 · `@인자@` 정규식이 글 끝까지 훑지 않게).
+fn window(s: &str, i: usize, n: usize) -> &str {
+    let mut end = i.saturating_add(n).min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[i..end]
 }
 
 fn flush(buf: &mut String, out: &mut Vec<Inline>) {
@@ -261,7 +272,8 @@ pub(crate) fn split_top_level(s: &str, sep: &str) -> Vec<String> {
 
 impl Run {
     pub(crate) fn new(opt: Options, source: String) -> Run {
-        Run { opt, source, footnotes: Vec::new(), named: HashMap::new(), categories: Vec::new(), headings: Vec::new(), section_counter: 0 }
+        let budget = source.len().saturating_mul(64).saturating_add(1_000_000);
+        Run { opt, source, footnotes: Vec::new(), named: HashMap::new(), categories: Vec::new(), headings: Vec::new(), section_counter: 0, budget }
     }
 
     fn run(mut self) -> Document {
@@ -470,10 +482,21 @@ impl Run {
         false
     }
 
+
+    /// 훑기가 `limit`에 닿으면 예산이 떨어진 것 — 0으로 두고 없음.
+    fn charge(&mut self, start: usize, at: usize, limit: usize, len: usize) {
+        if at >= limit && limit < len {
+            self.budget = 0;
+        } else {
+            self.budget = self.budget.saturating_sub(at.saturating_sub(start));
+        }
+    }
+
     /// `start`의 `{{{`와 짝을 이루는 `}}}`의 시작 위치.
     pub(crate) fn match_braces(&mut self, b: &[u8], start: usize) -> Option<usize> {
+        let limit = start.saturating_add(self.budget).min(b.len());
         let (mut depth, mut i) = (0usize, start);
-        while i < b.len() {
+        while i < limit {
             if b[i..].starts_with(b"{{{") {
                 depth += 1;
                 i += 3;
@@ -482,6 +505,7 @@ impl Run {
             if b[i..].starts_with(b"}}}") {
                 depth = depth.saturating_sub(1);
                 if depth == 0 {
+                    self.charge(start, i, limit, b.len());
                     return Some(i);
                 }
                 i += 3;
@@ -493,6 +517,66 @@ impl Run {
             }
             i += 1;
         }
+        self.charge(start, i, limit, b.len());
+        None
+    }
+
+    /// `[[`와 짝인 `]]`의 시작 위치. 바깥 단계에서 줄이 바뀌면 없음.
+    pub(crate) fn match_pair(&mut self, b: &[u8], start: usize) -> Option<usize> {
+        let limit = start.saturating_add(self.budget).min(b.len());
+        let (mut depth, mut i) = (0usize, start);
+        while i < limit {
+            if b[i] == b'\\' {
+                i += 2;
+                continue;
+            }
+            if b[i..].starts_with(b"[[") {
+                depth += 1;
+                i += 2;
+                continue;
+            }
+            if b[i..].starts_with(b"]]") {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    self.charge(start, i, limit, b.len());
+                    return Some(i);
+                }
+                i += 2;
+                continue;
+            }
+            if b[i] == b'\n' && depth <= 1 {
+                self.charge(start, i, limit, b.len());
+                return None;
+            }
+            i += 1;
+        }
+        self.charge(start, i, limit, b.len());
+        None
+    }
+
+    /// `[*`의 `[`와 짝인 `]`의 위치.
+    pub(crate) fn match_bracket(&mut self, b: &[u8], start: usize) -> Option<usize> {
+        let limit = start.saturating_add(self.budget).min(b.len());
+        let (mut depth, mut i) = (0usize, start);
+        while i < limit {
+            match b[i] {
+                b'\\' => {
+                    i += 2;
+                    continue;
+                }
+                b'[' => depth += 1,
+                b']' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        self.charge(start, i, limit, b.len());
+                        return Some(i);
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        self.charge(start, i, limit, b.len());
         None
     }
 
@@ -505,13 +589,22 @@ impl Run {
         if !is_bang && self.match_braces(first.as_bytes(), lead).is_some() {
             return 0;
         }
+        if self.budget == 0 {
+            return 0;
+        }
         let mut all = String::new();
         let mut starts = Vec::new();
         for l in &lines[i..] {
+            if all.len() > self.budget {
+                // 닫히지 않은 `{{{` 줄이 수만 개 — 남은 줄을 매번 잇지 않는다.
+                self.budget = 0;
+                return 0;
+            }
             starts.push(all.len());
             all.push_str(&l.text);
             all.push('\n');
         }
+        self.budget = self.budget.saturating_sub(all.len());
         let Some(close) = self.match_braces(all.as_bytes(), lead) else {
             return 0;
         };
@@ -685,7 +778,7 @@ impl Run {
             if e.indent < indent {
                 break;
             }
-            if e.indent > indent {
+            if e.indent > indent && depth < self.opt.max_depth {
                 if items.is_empty() {
                     items.push(Vec::new());
                 }
@@ -694,7 +787,8 @@ impl Run {
                 i = next;
                 continue;
             }
-            if e.marker != marker && !items.is_empty() {
+            // 너무 깊은 목록은 이 단계의 항목으로 이어 붙인다(스택이 넘치지 않게).
+            if e.indent == indent && e.marker != marker && !items.is_empty() {
                 break;
             }
             let inl = self.inline(&e.text, depth + 1);
@@ -805,7 +899,7 @@ impl Run {
                 }
             }
             if c == b'[' {
-                if let Some(m) = MACRO.captures(&s[i..]) {
+                if let Some(m) = MACRO.captures(window(s, i, 256)) {
                     if let Some(node) = macro_node(&m[1], m.get(2).map(|g| g.as_str())) {
                         flush(&mut buf, &mut out);
                         out.push(node);
@@ -815,7 +909,7 @@ impl Run {
                 }
             }
             if self.opt.template && c == b'@' {
-                if let Some(m) = PARAM.captures(&s[i..]) {
+                if let Some(m) = PARAM.captures(window(s, i, 256)) {
                     flush(&mut buf, &mut out);
                     out.push(Inline::Param { name: m[1].to_string(), fallback: m.get(2).map(|g| g.as_str().to_string()) });
                     i += m.get(0).map(|g| g.end()).unwrap_or(1);
@@ -830,57 +924,7 @@ impl Run {
         out
     }
 
-    /// `[[`와 짝인 `]]`의 시작 위치. 바깥 단계에서 줄이 바뀌면 없음.
-    pub(crate) fn match_pair(&mut self, b: &[u8], start: usize) -> Option<usize> {
-        let (mut depth, mut i) = (0usize, start);
-        while i < b.len() {
-            if b[i] == b'\\' {
-                i += 2;
-                continue;
-            }
-            if b[i..].starts_with(b"[[") {
-                depth += 1;
-                i += 2;
-                continue;
-            }
-            if b[i..].starts_with(b"]]") {
-                depth = depth.saturating_sub(1);
-                if depth == 0 {
-                    return Some(i);
-                }
-                i += 2;
-                continue;
-            }
-            if b[i] == b'\n' && depth <= 1 {
-                return None;
-            }
-            i += 1;
-        }
-        None
-    }
 
-    /// `[*`의 `[`와 짝인 `]`의 위치.
-    pub(crate) fn match_bracket(&mut self, b: &[u8], start: usize) -> Option<usize> {
-        let (mut depth, mut i) = (0usize, start);
-        while i < b.len() {
-            match b[i] {
-                b'\\' => {
-                    i += 2;
-                    continue;
-                }
-                b'[' => depth += 1,
-                b']' => {
-                    depth = depth.saturating_sub(1);
-                    if depth == 0 {
-                        return Some(i);
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-        None
-    }
 
     fn link(&mut self, inner: &str, depth: usize) -> Option<Inline> {
         let parts = split_top_level(inner, "|");
