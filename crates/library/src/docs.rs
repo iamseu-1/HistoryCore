@@ -1,0 +1,265 @@
+//! 문서 일 — 만들기 · 저장 · 이름 바꾸기 · 지우기 · 읽기(설계 5-1 · 5-2). 쓰는 일은 모두 SQLite 트랜잭션 하나다.
+use crate::error::{Error, Result};
+use crate::hlc::Hlc;
+use crate::ids::{DeviceId, DocId, RevId};
+use crate::ns::Namespace;
+use crate::store::{Counts, Doc, DocSummary, Library, Renamed, RevInfo, RevKind, Revision, Saved};
+use crate::title::normalize_title;
+use rusqlite::{params, Connection, OptionalExtension};
+
+const ZSTD_LEVEL: i32 = 3;
+const REV_COLUMNS: &str = "id, doc, parent, parent2, device, hlc, kind, ns, title, message, len";
+
+struct Head {
+    ns: Namespace,
+    title: String,
+    head: RevId,
+    created: Hlc,
+    updated: Hlc,
+    deleted: bool,
+}
+
+struct NewRev<'a> {
+    id: RevId,
+    doc: DocId,
+    parent: Option<RevId>,
+    kind: RevKind,
+    ns: Namespace,
+    title: &'a str,
+    message: &'a str,
+    body: &'a str,
+}
+
+fn load_head(db: &Connection, doc: DocId) -> Result<Head> {
+    db.query_row("SELECT ns, title, head, created, updated, deleted FROM doc WHERE id = ?1", params![doc], |r| {
+        Ok(Head { ns: r.get(0)?, title: r.get(1)?, head: r.get(2)?, created: r.get(3)?, updated: r.get(4)?, deleted: r.get(5)? })
+    })
+    .optional()?
+    .ok_or_else(|| Error::NotFound(format!("문서 {doc}")))
+}
+
+fn encode(body: &str) -> Result<Vec<u8>> {
+    Ok(zstd::bulk::compress(body.as_bytes(), ZSTD_LEVEL)?)
+}
+
+fn decode(blob: &[u8]) -> Result<String> {
+    let bytes = zstd::stream::decode_all(blob).map_err(|e| Error::Corrupt(format!("본문 풀기: {e}")))?;
+    String::from_utf8(bytes).map_err(|_| Error::Corrupt("본문이 UTF-8이 아님".into()))
+}
+
+fn read_body(db: &Connection, rev: RevId) -> Result<String> {
+    let blob: Vec<u8> = db
+        .query_row("SELECT body FROM rev WHERE id = ?1", params![rev], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| Error::NotFound(format!("판 {rev}")))?;
+    decode(&blob)
+}
+
+fn insert_rev(db: &Connection, device: DeviceId, hlc: Hlc, r: &NewRev) -> Result<()> {
+    db.execute(
+        "INSERT INTO rev(id, doc, parent, parent2, device, hlc, kind, ns, title, message, len, body)
+         VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![r.id, r.doc, r.parent, device, hlc, r.kind, r.ns, r.title, r.message, r.body.len() as i64, encode(r.body)?],
+    )?;
+    Ok(())
+}
+
+fn insert_doc(db: &Connection, doc: DocId, ns: Namespace, title: &str, head: RevId, hlc: Hlc) -> Result<()> {
+    db.execute(
+        "INSERT INTO doc(id, ns, title, head, created, updated, deleted) VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0)",
+        params![doc, ns, title, head, hlc],
+    )?;
+    Ok(())
+}
+
+fn rev_info(r: &rusqlite::Row<'_>) -> rusqlite::Result<RevInfo> {
+    Ok(RevInfo {
+        id: r.get(0)?,
+        doc: r.get(1)?,
+        parent: r.get(2)?,
+        parent2: r.get(3)?,
+        device: r.get(4)?,
+        hlc: r.get(5)?,
+        kind: r.get(6)?,
+        ns: r.get(7)?,
+        title: r.get(8)?,
+        message: r.get(9)?,
+        len: r.get::<_, i64>(10)? as u64,
+    })
+}
+
+impl Library {
+    pub fn create(&mut self, ns: Namespace, title: &str, body: &str, message: &str) -> Result<Saved> {
+        let title = normalize_title(title)?;
+        let (doc, rev, hlc, device) = (DocId::new(), RevId::new(), self.clock.now(), self.info.device);
+        let tx = self.db.transaction()?;
+        insert_rev(&tx, device, hlc, &NewRev { id: rev, doc, parent: None, kind: RevKind::Content, ns, title: &title, message, body })?;
+        if self.fail_after_rev {
+            return Err(Error::Injected);
+        }
+        insert_doc(&tx, doc, ns, &title, rev, hlc)?;
+        tx.commit()?;
+        Ok(Saved { doc, rev, hlc, changed: true })
+    }
+
+    pub fn save(&mut self, doc: DocId, base: RevId, body: &str, message: &str) -> Result<Saved> {
+        let device = self.info.device;
+        let tx = self.db.transaction()?;
+        let h = load_head(&tx, doc)?;
+        if h.head != base {
+            return Err(Error::StaleBase { head: h.head });
+        }
+        if !h.deleted && read_body(&tx, h.head)? == body {
+            return Ok(Saved { doc, rev: h.head, hlc: h.updated, changed: false });
+        }
+        let (rev, hlc) = (RevId::new(), self.clock.now());
+        insert_rev(&tx, device, hlc, &NewRev { id: rev, doc, parent: Some(h.head), kind: RevKind::Content, ns: h.ns, title: &h.title, message, body })?;
+        if self.fail_after_rev {
+            return Err(Error::Injected);
+        }
+        tx.execute("UPDATE doc SET head = ?2, updated = ?3, deleted = 0 WHERE id = ?1", params![doc, rev, hlc])?;
+        tx.commit()?;
+        Ok(Saved { doc, rev, hlc, changed: true })
+    }
+
+    pub fn rename(&mut self, doc: DocId, base: RevId, title: &str, keep_redirect: bool, message: &str) -> Result<Renamed> {
+        let new_title = normalize_title(title)?;
+        let device = self.info.device;
+        let tx = self.db.transaction()?;
+        let h = load_head(&tx, doc)?;
+        if h.head != base {
+            return Err(Error::StaleBase { head: h.head });
+        }
+        if h.deleted {
+            return Err(Error::Deleted(doc));
+        }
+        if h.title == new_title {
+            return Err(Error::BadTitle("지금 제목과 같음".into()));
+        }
+        let body = read_body(&tx, h.head)?;
+        let (rev, hlc) = (RevId::new(), self.clock.now());
+        insert_rev(&tx, device, hlc, &NewRev { id: rev, doc, parent: Some(h.head), kind: RevKind::Content, ns: h.ns, title: &new_title, message, body: &body })?;
+        tx.execute("UPDATE doc SET title = ?2, head = ?3, updated = ?4 WHERE id = ?1", params![doc, new_title, rev, hlc])?;
+        let redirect = if keep_redirect {
+            let (rdoc, rrev, rhlc) = (DocId::new(), RevId::new(), self.clock.now());
+            let rbody = format!("#넘겨주기 {}\n", h.ns.link_title(&new_title));
+            let r = NewRev { id: rrev, doc: rdoc, parent: None, kind: RevKind::Content, ns: h.ns, title: &h.title, message: "이름을 바꾸며 남긴 넘겨주기", body: &rbody };
+            insert_rev(&tx, device, rhlc, &r)?;
+            insert_doc(&tx, rdoc, h.ns, &h.title, rrev, rhlc)?;
+            Some(rdoc)
+        } else {
+            None
+        };
+        if self.fail_after_rev {
+            return Err(Error::Injected);
+        }
+        tx.commit()?;
+        Ok(Renamed { rev, hlc, redirect })
+    }
+
+    pub fn delete(&mut self, doc: DocId, base: RevId, message: &str) -> Result<Saved> {
+        let device = self.info.device;
+        let tx = self.db.transaction()?;
+        let h = load_head(&tx, doc)?;
+        if h.head != base {
+            return Err(Error::StaleBase { head: h.head });
+        }
+        if h.deleted {
+            return Ok(Saved { doc, rev: h.head, hlc: h.updated, changed: false });
+        }
+        let (rev, hlc) = (RevId::new(), self.clock.now());
+        insert_rev(&tx, device, hlc, &NewRev { id: rev, doc, parent: Some(h.head), kind: RevKind::Deleted, ns: h.ns, title: &h.title, message, body: "" })?;
+        if self.fail_after_rev {
+            return Err(Error::Injected);
+        }
+        tx.execute("UPDATE doc SET head = ?2, updated = ?3, deleted = 1 WHERE id = ?1", params![doc, rev, hlc])?;
+        tx.commit()?;
+        Ok(Saved { doc, rev, hlc, changed: true })
+    }
+
+    pub fn get(&self, doc: DocId) -> Result<Option<Doc>> {
+        let h = match load_head(&self.db, doc) {
+            Ok(h) => h,
+            Err(Error::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let body = read_body(&self.db, h.head)?;
+        Ok(Some(Doc { id: doc, ns: h.ns, title: h.title, head: h.head, created: h.created, updated: h.updated, deleted: h.deleted, body }))
+    }
+
+    /// 이름공간 · 제목이 같은 살아 있는 문서들(만든 차례). 쓸 수 없는 제목이면 빈 목록.
+    pub fn by_title(&self, ns: Namespace, title: &str) -> Result<Vec<DocSummary>> {
+        let Ok(title) = normalize_title(title) else {
+            return Ok(Vec::new());
+        };
+        let mut st = self.db.prepare_cached(
+            "SELECT id, ns, title, head, created, updated FROM doc WHERE ns = ?1 AND title = ?2 AND deleted = 0 ORDER BY created, id",
+        )?;
+        let rows = st.query_map(params![ns, title], |r| {
+            Ok(DocSummary { id: r.get(0)?, ns: r.get(1)?, title: r.get(2)?, head: r.get(3)?, created: r.get(4)?, updated: r.get(5)? })
+        })?;
+        let out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(out)
+    }
+
+    /// 판 기록, 새 것부터. `before`가 있으면 그 시각보다 앞선 판만(이어 받기).
+    pub fn history(&self, doc: DocId, limit: usize, before: Option<Hlc>) -> Result<Vec<RevInfo>> {
+        let mut st = self.db.prepare_cached(&format!("SELECT {REV_COLUMNS} FROM rev WHERE doc = ?1 AND hlc < ?2 ORDER BY hlc DESC LIMIT ?3"))?;
+        let rows = st.query_map(params![doc, before.unwrap_or(Hlc(i64::MAX as u64)), limit as i64], rev_info)?;
+        let out = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(out)
+    }
+
+    pub fn revision(&self, rev: RevId) -> Result<Option<Revision>> {
+        let row = self
+            .db
+            .query_row(&format!("SELECT {REV_COLUMNS}, body FROM rev WHERE id = ?1"), params![rev], |r| Ok((rev_info(r)?, r.get::<_, Vec<u8>>(11)?)))
+            .optional()?;
+        match row {
+            None => Ok(None),
+            Some((info, blob)) => Ok(Some(Revision { info, body: decode(&blob)? })),
+        }
+    }
+
+    pub fn counts(&self) -> Result<Counts> {
+        let mut counts = Counts::default();
+        let mut st = self.db.prepare_cached("SELECT ns, deleted, count(*) FROM doc GROUP BY ns, deleted")?;
+        let mut rows = st.query([])?;
+        while let Some(r) = rows.next()? {
+            let (ns, deleted, n): (Namespace, bool, i64) = (r.get(0)?, r.get(1)?, r.get(2)?);
+            if deleted {
+                counts.deleted += n as u64;
+            } else {
+                counts.live[ns as usize] += n as u64;
+            }
+        }
+        Ok(counts)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{Error, Library, Namespace};
+
+    #[test]
+    fn a_write_cut_after_the_revision_leaves_no_half_state() {
+        // Review Focus 4 — 판을 넣은 뒤 문서 머리를 옮기기 전에 끊긴다.
+        let app = std::env::temp_dir().join(format!("서재 시험 끊긴 저장 {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&app);
+        let mut lib = Library::open(&app).unwrap();
+        let s = lib.create(Namespace::Doc, "임진왜란", "첫 판", "").unwrap();
+        lib.fail_after_rev = true;
+        assert!(matches!(lib.save(s.doc, s.rev, "둘째 판", ""), Err(Error::Injected)));
+        assert!(matches!(lib.delete(s.doc, s.rev, ""), Err(Error::Injected)));
+        assert!(matches!(lib.rename(s.doc, s.rev, "임진 전쟁", true, ""), Err(Error::Injected)));
+        assert!(matches!(lib.create(Namespace::Doc, "정유재란", "x", ""), Err(Error::Injected)));
+        lib.fail_after_rev = false;
+        let d = lib.get(s.doc).unwrap().unwrap();
+        assert_eq!((d.head, d.body.as_str(), d.title.as_str()), (s.rev, "첫 판", "임진왜란"));
+        let revs: i64 = lib.db.query_row("SELECT count(*) FROM rev", [], |r| r.get(0)).unwrap();
+        let docs: i64 = lib.db.query_row("SELECT count(*) FROM doc", [], |r| r.get(0)).unwrap();
+        assert_eq!((revs, docs), (1, 1));
+        drop(lib);
+        std::fs::remove_dir_all(&app).unwrap();
+    }
+}

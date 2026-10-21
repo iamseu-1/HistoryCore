@@ -55,7 +55,8 @@ fn the_old_apps_files_in_the_same_folder_stay_byte_for_byte() {
     std::fs::write(app.join("index.db"), "옛 색인 바이트").unwrap();
     std::fs::write(app.join("local.db"), "옛 기기 상태 바이트").unwrap();
     let before = files(&app);
-    let lib = Library::open(&app).unwrap();
+    let mut lib = Library::open(&app).unwrap();
+    lib.create(history_library::Namespace::Doc, "임진왜란", "새 서재의 본문", "").unwrap();
     drop(lib);
     assert_eq!(files(&app), before);
     assert!(our_file(&app).is_file());
