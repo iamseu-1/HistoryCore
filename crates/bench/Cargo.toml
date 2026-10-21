@@ -1,0 +1,15 @@
+[package]
+name = "history_bench"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "hc-bench"
+path = "src/main.rs"
+
+[dependencies]
+history_corpus = { path = "../corpus" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
