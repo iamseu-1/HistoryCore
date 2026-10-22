@@ -63,7 +63,7 @@ impl Tree {
         }
         {
             // 같은 제목의 분류 문서가 둘이면 먼저 만든 것.
-            let mut st = db.prepare_cached("SELECT title, home FROM item WHERE ns = 1 AND deleted = 0 ORDER BY title, created")?;
+            let mut st = db.prepare_cached("SELECT title, home FROM item INDEXED BY item_categories WHERE ns = 1 AND deleted = 0 ORDER BY title, created")?;
             let mut rows = st.query([])?;
             while let Some(r) = rows.next()? {
                 let (title, home): (String, Option<String>) = (r.get(0)?, r.get(1)?);
@@ -184,10 +184,11 @@ fn cut_cycles(nodes: &mut BTreeMap<String, Node>) -> Vec<String> {
 
 /// 그 분류가 집인 살아 있는 일반 문서, 제목 차례로 `after` 뒤부터. 빈 이름은 「분류 안 됨」.
 fn docs_in(db: &Connection, category: &str, limit: usize, after: Option<&str>) -> Result<Vec<DocSummary>> {
+    // 색인을 정해 준다 — 플래너는 ORDER BY title을 맞추는 item_title로 일반 문서 전체를 훑기 쉽다(10만 편에서 1초).
     let sql = if category.is_empty() {
-        "SELECT doc, ns, title, rev, created, updated FROM item WHERE home IS NULL AND ns = 0 AND deleted = 0 AND title > ?2 AND ?1 = '' ORDER BY title LIMIT ?3"
+        "SELECT doc, ns, title, rev, created, updated FROM item INDEXED BY item_home WHERE home IS NULL AND ns = 0 AND deleted = 0 AND title > ?2 AND ?1 = '' ORDER BY title LIMIT ?3"
     } else {
-        "SELECT doc, ns, title, rev, created, updated FROM item WHERE home = ?1 AND ns = 0 AND deleted = 0 AND title > ?2 ORDER BY title LIMIT ?3"
+        "SELECT doc, ns, title, rev, created, updated FROM item INDEXED BY item_home WHERE home = ?1 AND ns = 0 AND deleted = 0 AND title > ?2 ORDER BY title LIMIT ?3"
     };
     let mut st = db.prepare_cached(sql)?;
     let rows = st.query_map(params![category, after.unwrap_or(""), limit as i64], summary_row)?;

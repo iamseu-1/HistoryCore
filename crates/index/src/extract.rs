@@ -6,46 +6,39 @@ use std::sync::LazyLock;
 
 /// 뽑기 표 — `item`(문서 번호)을 `doc`/`src`로 가리킨다.
 pub(crate) const SCHEMA: &str = "
-CREATE TABLE link(src INTEGER NOT NULL, kind INTEGER NOT NULL, ns TEXT NOT NULL, key TEXT NOT NULL);
-CREATE INDEX link_src ON link(src);
+-- 문서 번호가 앞인 기본 키 표 — 「이 문서의 행」을 따로 색인하지 않고, 통째 짓기는 번호 차례로 넣는다.
+CREATE TABLE link(src INTEGER NOT NULL, kind INTEGER NOT NULL, ns TEXT NOT NULL, key TEXT NOT NULL, PRIMARY KEY(src, kind, ns, key)) WITHOUT ROWID;
 CREATE INDEX link_target ON link(ns, key);
 -- 본문 링크가 가리키는 대상별 문서 수(만들 문서 · 많이 불리는 문서).
 -- present: 그 제목의 살아 있는 문서가 색인에 있다(만들 문서 = present 0).
 CREATE TABLE target(ns TEXT NOT NULL, key TEXT NOT NULL, refs INTEGER NOT NULL, present INTEGER NOT NULL, PRIMARY KEY(ns, key)) WITHOUT ROWID;
 CREATE INDEX target_wanted ON target(present, refs);
-CREATE INDEX target_refs ON target(refs);
-CREATE TABLE member(doc INTEGER NOT NULL, category TEXT NOT NULL, first INTEGER NOT NULL);
-CREATE INDEX member_doc ON member(doc);
+CREATE TABLE member(doc INTEGER NOT NULL, category TEXT NOT NULL, first INTEGER NOT NULL, PRIMARY KEY(doc, category)) WITHOUT ROWID;
 CREATE INDEX member_category ON member(category);
-CREATE TABLE note(doc INTEGER NOT NULL, n INTEGER NOT NULL, text TEXT NOT NULL);
-CREATE INDEX note_doc ON note(doc);
-CREATE TABLE source(doc INTEGER NOT NULL, name TEXT NOT NULL);
-CREATE INDEX source_doc ON source(doc);
+-- 각주 글은 그리기 모델에 있다 — 색인은 각주 속 사료 이름만 둔다.
+CREATE TABLE source(doc INTEGER NOT NULL, name TEXT NOT NULL, PRIMARY KEY(doc, name)) WITHOUT ROWID;
 CREATE INDEX source_name ON source(name);
-CREATE TABLE entity(doc INTEGER NOT NULL, entity TEXT NOT NULL);
-CREATE INDEX entity_doc ON entity(doc);
+CREATE TABLE entity(doc INTEGER NOT NULL, entity TEXT NOT NULL, PRIMARY KEY(doc, entity)) WITHOUT ROWID;
 CREATE INDEX entity_entity ON entity(entity);
-CREATE TABLE uses(doc INTEGER NOT NULL, template TEXT NOT NULL);
-CREATE INDEX uses_doc ON uses(doc);
+CREATE TABLE uses(doc INTEGER NOT NULL, template TEXT NOT NULL, PRIMARY KEY(doc, template)) WITHOUT ROWID;
 CREATE INDEX uses_template ON uses(template);
 CREATE TABLE years(doc INTEGER PRIMARY KEY, y0 INTEGER NOT NULL, y1 INTEGER NOT NULL);
 -- 분류마다 바로 든 살아 있는 일반 문서 수(빈 이름 = 분류 안 됨). 나무는 이것과 분류 문서의 부모만 읽는다.
 CREATE TABLE folder(name TEXT PRIMARY KEY, direct INTEGER NOT NULL) WITHOUT ROWID;
-CREATE INDEX item_home ON item(home, title) WHERE ns = 0 AND deleted = 0;
-CREATE INDEX item_categories ON item(title, created) WHERE ns = 1 AND deleted = 0;
-CREATE INDEX item_title ON item(ns, title) WHERE deleted = 0;
+-- 덮는 색인 — 차가운 디스크에서도 행을 따로 찾아가지 않고 색인 쪽만 읽는다.
+CREATE INDEX item_home ON item(home, title, ns, doc, rev, created, updated) WHERE ns = 0 AND deleted = 0;
+CREATE INDEX item_categories ON item(title, created, home) WHERE ns = 1 AND deleted = 0;
+CREATE INDEX item_title ON item(ns, title, created, doc, rev, updated) WHERE deleted = 0;
 ";
 
 /// 이 문서 번호의 뽑기 행을 담은 표(다시 색인할 때 모두 지운다).
-pub(crate) const PER_DOC: [(&str, &str); 7] =
-    [("link", "src"), ("member", "doc"), ("note", "doc"), ("source", "doc"), ("entity", "doc"), ("uses", "doc"), ("years", "doc")];
+pub(crate) const PER_DOC: [(&str, &str); 6] = [("link", "src"), ("member", "doc"), ("source", "doc"), ("entity", "doc"), ("uses", "doc"), ("years", "doc")];
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Extracted {
     /// 서재 이름공간을 가리키는 링크(종류, 이름공간 접두어, 제목).
     pub(crate) links: Vec<(LinkKind, String, String)>,
     pub(crate) categories: Vec<String>,
-    pub(crate) footnotes: Vec<String>,
     pub(crate) sources: Vec<String>,
     pub(crate) entities: Vec<String>,
     pub(crate) templates: Vec<String>,
@@ -56,15 +49,24 @@ static SOURCE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"『([^』]+)』")
 static NUMBER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d{1,4}").unwrap());
 
 pub(crate) fn extract(model: &Model, doc: &Document) -> Extracted {
-    let links = out_links(doc)
-        .into_iter()
-        .filter(|l| Namespace::ALL.iter().any(|n| n.prefix() == l.target.ns))
-        .map(|l| {
-            // 서재 제목과 같은 꼴로(공백 · 보이지 않는 글자 · NFC) — 링크 대상과 문서 제목을 그대로 견준다.
-            let key = history_library::normalize_title(&l.target.key).unwrap_or(l.target.key);
-            (l.kind, l.target.ns, key)
-        })
-        .collect();
+    let mut links: Vec<(LinkKind, String, String)> = Vec::new();
+    for l in out_links(doc) {
+        if !Namespace::ALL.iter().any(|n| n.prefix() == l.target.ns) {
+            continue;
+        }
+        // 서재 제목과 같은 꼴로(공백 · 보이지 않는 글자 · NFC) — 링크 대상과 문서 제목을 그대로 견준다.
+        let key = history_library::normalize_title(&l.target.key).unwrap_or(l.target.key);
+        let link = (l.kind, l.target.ns, key);
+        if !links.contains(&link) {
+            links.push(link);
+        }
+    }
+    let mut categories: Vec<String> = Vec::new();
+    for c in &doc.categories {
+        if !categories.contains(c) {
+            categories.push(c.clone());
+        }
+    }
     let footnotes: Vec<String> = doc.footnotes.iter().map(|f| plain_inline(&f.children)).collect();
     let mut sources = Vec::new();
     for f in &footnotes {
@@ -77,8 +79,7 @@ pub(crate) fn extract(model: &Model, doc: &Document) -> Extracted {
     }
     Extracted {
         links,
-        categories: doc.categories.clone(),
-        footnotes,
+        categories,
         sources,
         entities: timeline_entities(doc),
         templates: model.templates.clone(),

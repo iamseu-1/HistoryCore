@@ -34,7 +34,7 @@ struct NewRev<'a> {
 }
 
 fn load_head(db: &Connection, doc: DocId) -> Result<Head> {
-    db.query_row("SELECT ns, title, head, created, updated, deleted FROM doc WHERE id = ?1", params![doc], |r| {
+    db.prepare_cached("SELECT ns, title, head, created, updated, deleted FROM doc WHERE id = ?1")?.query_row(params![doc], |r| {
         Ok(Head { ns: r.get(0)?, title: r.get(1)?, head: r.get(2)?, created: r.get(3)?, updated: r.get(4)?, deleted: r.get(5)? })
     })
     .optional()?
@@ -54,14 +54,31 @@ fn encode(body: &str) -> Result<Vec<u8>> {
     Ok(zstd::bulk::compress(body.as_bytes(), ZSTD_LEVEL)?)
 }
 
+thread_local! {
+    /// 스레드마다 풀기 문맥 하나 — 부를 때마다 만들면 짧은 본문에서는 풀기보다 문맥 만들기가 더 든다.
+    static UNZ: std::cell::RefCell<Option<zstd::bulk::Decompressor<'static>>> = const { std::cell::RefCell::new(None) };
+}
+
 fn decode(blob: &[u8]) -> Result<String> {
-    let bytes = zstd::stream::decode_all(blob).map_err(|e| Error::Corrupt(format!("본문 풀기: {e}")))?;
+    let bytes = match zstd::zstd_safe::get_frame_content_size(blob) {
+        Ok(Some(size)) => UNZ.with(|u| {
+            let mut u = u.borrow_mut();
+            if u.is_none() {
+                *u = Some(zstd::bulk::Decompressor::new()?);
+            }
+            u.as_mut().expect("풀기 문맥").decompress(blob, size as usize)
+        }),
+        // 크기가 적히지 않은 묶음(없어야 하지만)은 흐름으로 푼다.
+        _ => zstd::stream::decode_all(blob),
+    }
+    .map_err(|e| Error::Corrupt(format!("본문 풀기: {e}")))?;
     String::from_utf8(bytes).map_err(|_| Error::Corrupt("본문이 UTF-8이 아님".into()))
 }
 
 fn read_body(db: &Connection, rev: RevId) -> Result<String> {
     let blob: Vec<u8> = db
-        .query_row("SELECT body FROM rev WHERE id = ?1", params![rev], |r| r.get(0))
+        .prepare_cached("SELECT body FROM rev WHERE id = ?1")?
+        .query_row(params![rev], |r| r.get(0))
         .optional()?
         .ok_or_else(|| Error::NotFound(format!("판 {rev}")))?;
     decode(&blob)
@@ -139,6 +156,14 @@ impl Library {
     pub fn import(&mut self, docs: &mut dyn Iterator<Item = NewDoc>, batch: usize) -> Result<Vec<Saved>> {
         let batch = batch.max(1);
         let device = self.info.device;
+        // 제목 색인에 무작위로 넣으므로 들이는 동안만 캐시를 크게 둔다.
+        self.db.execute_batch("PRAGMA cache_size = -262144;")?;
+        let out = self.import_batches(docs, batch, device);
+        self.db.execute_batch("PRAGMA cache_size = -16384;")?;
+        out
+    }
+
+    fn import_batches(&mut self, docs: &mut dyn Iterator<Item = NewDoc>, batch: usize, device: DeviceId) -> Result<Vec<Saved>> {
         let mut out = Vec::new();
         let mut pending: Vec<(Namespace, String, String)> = Vec::with_capacity(batch);
         let mut seen = 0usize;
@@ -370,6 +395,12 @@ pub struct Reader {
 }
 
 impl Reader {
+    /// 서재 파일(`<자료 폴더>/HistoryCore/library.db`)을 읽기 전용으로 연다.
+    pub fn open(library_db: &std::path::Path) -> Result<Reader> {
+        let db = Connection::open_with_flags(library_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        Ok(Reader { db })
+    }
+
     pub fn get(&self, doc: DocId) -> Result<Option<Doc>> {
         let h = match load_head(&self.db, doc) {
             Ok(h) => h,

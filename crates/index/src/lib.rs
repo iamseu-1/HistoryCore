@@ -9,6 +9,7 @@ pub mod store;
 pub mod tree;
 
 pub use engine::{Engine, Hit, IndexStatus, LibraryTemplates, Opened, StepReport, Wanted};
+pub use rebuild::RebuildReport;
 pub use stats::{DayEdits, DecadeCount, Group, GroupLink, Home, HomeOptions, Linked, MonthNew, SourceCount, Stats};
 pub use tree::{Children, Folder};
 

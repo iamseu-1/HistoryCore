@@ -1,8 +1,9 @@
 //! 본문 찾기(설계 5-5 「검색」). 한글 · 한자를 2글자 조각으로 잘라 contentless FTS5(`detail=none`)에 넣는다.
 //! 3글자 넘는 덩이는 조각 AND로 후보를 얻고, 저장해 둔 글자(plain)로 확인한다.
 //! 조각내기는 Rust가 하고 FTS5에는 띄어 쓴 조각을 넣는다(`tokenize='ascii'` — 비ASCII 글자는 모두 낱말 글자, 공백에서만 끊는다).
+use std::borrow::Cow;
 use std::collections::HashSet;
-use unicode_normalization::UnicodeNormalization;
+use unicode_normalization::{is_nfc_quick, IsNormalized, UnicodeNormalization};
 
 /// 문서 번호(`rowid`)마다 조각만 든다. 지우기는 `DELETE FROM fts WHERE rowid = ?`.
 pub const FTS_SCHEMA: &str = "CREATE VIRTUAL TABLE fts USING fts5(t, content='', contentless_delete=1, detail=none, tokenize='ascii');";
@@ -23,13 +24,26 @@ pub fn shard_schema(table: &str) -> String {
 
 /// 넣을 때와 찾을 때 같은 꼴로 — NFC(결합 자모로 친 한글을 음절로) + 소문자.
 pub fn normalize(text: &str) -> String {
-    text.nfc().flat_map(char::to_lowercase).collect()
+    normalized(text).into_owned()
+}
+
+/// 이미 NFC이고 대문자가 없으면(한글 · 한자 글은 거의 그렇다) 빌려 쓴다.
+fn normalized(text: &str) -> Cow<'_, str> {
+    if is_nfc_quick(text.chars()) == IsNormalized::Yes && !text.chars().any(char::is_uppercase) {
+        Cow::Borrowed(text)
+    } else {
+        Cow::Owned(text.nfc().flat_map(char::to_lowercase).collect())
+    }
 }
 
 /// 저장해 두는 글자(plain) — NFC만 한다(대소문자는 둔다: 미리보기에 그대로 보인다).
 /// 확인할 덩이는 한글 · 한자뿐이라 대소문자가 없으니, 찾을 때 이 글을 다시 정규화하지 않고 그대로 견준다.
 pub fn stored_plain(text: &str) -> String {
-    text.nfc().collect()
+    if is_nfc_quick(text.chars()) == IsNormalized::Yes {
+        text.to_string()
+    } else {
+        text.nfc().collect()
+    }
 }
 
 /// 2글자 조각으로 자르는 「덩이 글자」 — 한글 음절과 한자(그리기 모델의 한자 구간과 같은 범위).
@@ -78,25 +92,79 @@ fn pieces(normalized: &str) -> Vec<Piece> {
 /// 넣을 조각 — 덩이 `c1…cn`은 `c1c2, c2c3, …`과 끝 글자 `cn`(1글자 찾기가 앞붙이 질의로 모든 자리를 만나도록), 낱말은 그대로.
 /// 처음 나온 차례, 문서 안 같은 조각은 한 번.
 pub fn index_tokens(text: &str) -> Vec<String> {
-    let mut seen = HashSet::new();
-    let mut out = Vec::new();
-    let mut put = |t: String| {
-        if seen.insert(t.clone()) {
-            out.push(t);
+    let n = normalized(text);
+    token_slices(&n).into_iter().map(str::to_string).collect()
+}
+
+/// FTS 표에 넣을 글 — 조각을 띄어 쓴 것(`index_tokens`와 같은 조각, 글을 빌려 쓰며 한 번에 잇는다).
+pub fn index_text(text: &str) -> String {
+    let n = normalized(text);
+    let tokens = token_slices(&n);
+    let mut out = String::with_capacity(tokens.iter().map(|t| t.len() + 1).sum());
+    for (i, t) in tokens.iter().enumerate() {
+        if i > 0 {
+            out.push(' ');
         }
-    };
-    for p in pieces(&normalize(text)) {
-        match p {
-            Piece::Run(cs) => {
-                for w in cs.windows(2) {
-                    put(w.iter().collect());
-                }
-                put(cs[cs.len() - 1].to_string());
-            }
-            Piece::Word(w) => put(w),
-        }
+        out.push_str(t);
     }
     out
+}
+
+/// 정규화한 글에서 조각을 잘라 빌려 쓴다(덩이 · 낱말 경계는 `pieces`와 같다).
+fn token_slices(n: &str) -> Vec<&str> {
+    let mut c = Collect { n, seen: HashSet::new(), out: Vec::new(), run: Vec::new(), word: None };
+    for (i, ch) in n.char_indices() {
+        if is_block(ch) {
+            c.end_word(i);
+            c.run.push(i);
+        } else if ch.is_alphanumeric() {
+            c.end_run(i);
+            c.word.get_or_insert(i);
+        } else {
+            c.end_run(i);
+            c.end_word(i);
+        }
+    }
+    c.end_run(n.len());
+    c.end_word(n.len());
+    c.out
+}
+
+/// 조각 모으기 — 덩이는 글자 시작 위치들, 낱말은 시작 위치를 들고 간다.
+struct Collect<'a> {
+    n: &'a str,
+    seen: HashSet<&'a str>,
+    out: Vec<&'a str>,
+    run: Vec<usize>,
+    word: Option<usize>,
+}
+
+impl<'a> Collect<'a> {
+    fn put(&mut self, from: usize, to: usize) {
+        let t = &self.n[from..to];
+        if self.seen.insert(t) {
+            self.out.push(t);
+        }
+    }
+
+    fn end_word(&mut self, at: usize) {
+        if let Some(w) = self.word.take() {
+            self.put(w, at);
+        }
+    }
+
+    /// 덩이를 끝낸다 — 겹치는 2글자, 그리고 끝 글자.
+    fn end_run(&mut self, at: usize) {
+        if self.run.is_empty() {
+            return;
+        }
+        let run = std::mem::take(&mut self.run);
+        for k in 0..run.len().saturating_sub(1) {
+            let to = if k + 2 < run.len() { run[k + 2] } else { at };
+            self.put(run[k], to);
+        }
+        self.put(run[run.len() - 1], at);
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

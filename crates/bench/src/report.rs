@@ -35,13 +35,23 @@ pub struct Verdict {
 }
 
 #[derive(Clone, Debug, Serialize)]
+pub struct Part {
+    pub label: String,
+    pub value: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Report {
     pub library: String,
     pub device: String,
     pub docs: u32,
     pub seed: u64,
     pub load_ms: u64,
+    /// 들이기를 나눈 몫(ms).
+    pub load_parts: Vec<Part>,
     pub bytes_on_disk: u64,
+    /// 저장 공간을 나눈 몫(바이트).
+    pub disk_parts: Vec<Part>,
     pub ops: Vec<OpStats>,
     pub verdicts: Vec<Verdict>,
 }
@@ -76,6 +86,14 @@ impl Report {
             self.bytes_on_disk as f64 / 1_048_576.0,
             self.seed
         );
+        if !self.load_parts.is_empty() {
+            let parts: Vec<String> = self.load_parts.iter().map(|p| format!("{} {:.1}초", p.label, p.value as f64 / 1000.0)).collect();
+            s = s.replacen("\n\n## 예산표", &format!("\n\n들이기 나눔: {}\n\n## 예산표", parts.join(" · ")), 1);
+        }
+        if !self.disk_parts.is_empty() {
+            let parts: Vec<String> = self.disk_parts.iter().map(|p| format!("{} {:.1}MB", p.label, p.value as f64 / 1_048_576.0)).collect();
+            s = s.replacen("\n\n## 예산표", &format!("\n\n저장 공간 나눔: {}\n\n## 예산표", parts.join(" · ")), 1);
+        }
         for v in &self.verdicts {
             s += &format!("| {} | {} | {} |\n", v.label, ms(v.measured_us), if v.pass { "통과" } else { "못 미침" });
         }

@@ -62,13 +62,16 @@ pub fn run(lib: &mut dyn Library, corpus: &Corpus, plan: &RunPlan, device: &str)
         lib.home_aggregates().map(drop)
     })?;
     let verdicts = Report::judge(&ops);
+    let part = |v: Vec<(&'static str, u64)>| v.into_iter().map(|(label, value)| crate::report::Part { label: label.into(), value }).collect();
     Ok(Report {
         library: lib.name().into(),
         device: device.into(),
         docs: corpus.spec().docs,
         seed: corpus.spec().seed,
         load_ms: load.as_millis() as u64,
+        load_parts: part(lib.load_parts()),
         bytes_on_disk: lib.bytes_on_disk()?,
+        disk_parts: part(lib.disk_parts()),
         ops,
         verdicts,
     })

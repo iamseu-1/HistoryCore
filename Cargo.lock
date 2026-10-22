@@ -172,6 +172,7 @@ version = "0.0.1"
 dependencies = [
  "history_corpus",
  "history_index",
+ "history_library",
  "history_namumark",
  "rusqlite",
  "serde",

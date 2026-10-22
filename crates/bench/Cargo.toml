@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 history_corpus = { path = "../corpus" }
 history_index = { path = "../index" }
+history_library = { path = "../library" }
 history_namumark = { path = "../namumark" }
 zstd = "0.13"
 rusqlite = { version = "0.37", features = ["bundled"] }

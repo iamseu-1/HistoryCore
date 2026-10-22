@@ -7,7 +7,7 @@ pub mod plain;
 pub mod refs;
 
 pub use ast::{Align, Block, Cell, Document, FootnoteDef, Inline, ListStyle, Section, Style};
-pub use model::{render, MAlign, MBlock, MCell, MFootnote, MInline, MListStyle, MSection, MStyle, Model, NoTemplates, RenderOptions, TemplateStatus, Templates, MAX_TEMPLATE_BYTES, MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_EXPANSIONS, MODEL_VERSION};
+pub use model::{render, render_document, MAlign, MBlock, MCell, MFootnote, MInline, MListStyle, MSection, MStyle, Model, NoTemplates, RenderOptions, TemplateStatus, Templates, MAX_TEMPLATE_BYTES, MAX_TEMPLATE_DEPTH, MAX_TEMPLATE_EXPANSIONS, MODEL_VERSION};
 pub use parser::{parse, redirect_of, Options};
 pub use anchors::anchor_blocks;
 pub use plain::{out_links, plain_document, plain_inline, timeline_entities, LinkKind, OutLink};

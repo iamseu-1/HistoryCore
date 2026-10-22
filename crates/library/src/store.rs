@@ -211,7 +211,7 @@ impl Library {
         }
         let db = Connection::open(&path)?;
         let tables = check_identity(&db, &path)?;
-        db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;")?;
+        db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA cache_size = -16384;")?;
         if tables == 0 {
             create_schema(&db)?;
         }

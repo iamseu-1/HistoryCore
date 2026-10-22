@@ -1,6 +1,6 @@
 //! 그리기 모델(설계 5-6) — 저장할 때 한 번 굳혀 두고 library_view가 이것만 그린다.
 //! 틀을 펼치고(넘겨주기 한 번 따라감), 각주를 그린 차례로 다시 매기고, 한자 구간을 가르고, 문단 범위를 UTF-16 칸으로 낸다.
-use crate::ast::{Align, Block, FootnoteDef, Inline, ListStyle, Style};
+use crate::ast::{Align, Block, Document, FootnoteDef, Inline, ListStyle, Style};
 use crate::parser::{parse, parse_budgeted, redirect_of, Options};
 use crate::refs::{ObjectRef, TEMPLATE};
 use regex::Regex;
@@ -237,9 +237,15 @@ fn utf16_positions(src: &str, bytes: &[usize]) -> Vec<usize> {
 
 /// 원문을 그리기 모델로.
 pub fn render(source: &str, options: &RenderOptions, templates: &dyn Templates) -> Model {
+    render_document(source, options, templates).0
+}
+
+/// `render`와 같되 해석한 구문 트리도 돌려준다 — 색인이 같은 원문을 두 번 해석하지 않도록.
+pub fn render_document(source: &str, options: &RenderOptions, templates: &dyn Templates) -> (Model, Document) {
     let doc = parse(source, &Options { template: options.template, current: options.title.clone(), ..Options::default() });
-    if let Some(r) = doc.redirect {
-        return Model { version: MODEL_VERSION, redirect: Some(r), blocks: Vec::new(), footnotes: Vec::new(), sections: Vec::new(), categories: Vec::new(), template_categories: Vec::new(), templates: Vec::new() };
+    if let Some(r) = &doc.redirect {
+        let model = Model { version: MODEL_VERSION, redirect: Some(r.clone()), blocks: Vec::new(), footnotes: Vec::new(), sections: Vec::new(), categories: Vec::new(), template_categories: Vec::new(), templates: Vec::new() };
+        return (model, doc);
     }
     let mut chain = Vec::new();
     if let (true, Some(t)) = (options.template, &options.title) {
@@ -271,7 +277,8 @@ pub fn render(source: &str, options: &RenderOptions, templates: &dyn Templates) 
         .enumerate()
         .map(|(i, s)| MSection { index: s.index, level: s.level, number: s.number.clone(), title: s.title.clone(), start: units[2 * i], end: units[2 * i + 1] })
         .collect();
-    Model { version: MODEL_VERSION, redirect: None, blocks, footnotes: b.footnotes, sections, categories: doc.categories, template_categories: b.template_categories, templates: b.used }
+    let model = Model { version: MODEL_VERSION, redirect: None, blocks, footnotes: b.footnotes, sections, categories: doc.categories.clone(), template_categories: b.template_categories, templates: b.used };
+    (model, doc)
 }
 
 struct Builder<'t> {

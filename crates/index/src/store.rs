@@ -8,7 +8,7 @@ pub const FILE: &str = "index.db";
 /// 통째 짓기가 쓰는 임시 파일. 다 지으면 `index.db`와 바꿔 끼운다.
 pub const BUILDING: &str = "index.db.building";
 /// 색인 형식 판. 바뀌면 옮기지 않고 다시 짓는다(파생물).
-pub const FORMAT: i64 = 1;
+pub const FORMAT: i64 = 2;
 /// "HCIX".
 pub const APPLICATION_ID: i64 = 0x4843_4958;
 
@@ -54,10 +54,12 @@ impl Index {
             Probe::Rebuild => remove_db(&path)?,
         }
         let db = Connection::open(&path)?;
-        db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;")?;
+        // 쪽 크기는 빈 파일에서만 정해진다 — 모델 · 글자 행(2–3KB)이 4KB 쪽마다 빈자리를 남기지 않도록 8KB.
+        db.execute_batch("PRAGMA page_size = 8192;")?;
+        db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -32768;")?;
         let tables: i64 = db.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
         if tables == 0 {
-            create(&db, library, extra_schema)?;
+            create(&db, library, extra_schema, false)?;
         }
         Ok(Index { db, path })
     }
@@ -83,19 +85,30 @@ pub(crate) fn set_meta(db: &Connection, key: &str, value: i64) -> Result<()> {
     Ok(())
 }
 
-/// 빈 파일에 스키마를 만든다(통째 짓기의 임시 파일도 같은 것을 쓴다).
-pub(crate) fn create(db: &Connection, library: LibraryId, extra_schema: &str) -> Result<()> {
+/// 빈 파일에 스키마를 만든다. `defer_indexes`면 보조 색인(`CREATE INDEX`)은 만들지 않고 돌려준다 —
+/// 통째 짓기는 행을 다 넣은 뒤 한 번에 만든다(무작위 자리에 하나씩 넣는 것보다 훨씬 빠르다).
+pub(crate) fn create(db: &Connection, library: LibraryId, extra_schema: &str, defer_indexes: bool) -> Result<Vec<String>> {
     let tx = db.unchecked_transaction()?;
     tx.execute_batch(&format!("PRAGMA application_id = {APPLICATION_ID}; PRAGMA user_version = {FORMAT};"))?;
-    tx.execute_batch(SCHEMA)?;
+    let mut deferred = Vec::new();
+    for stmt in format!("{SCHEMA}{extra_schema}").split(';') {
+        let sql: String = stmt.lines().filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n");
+        if sql.trim().is_empty() {
+            continue;
+        }
+        if defer_indexes && sql.trim_start().starts_with("CREATE INDEX") {
+            deferred.push(sql);
+        } else {
+            tx.execute_batch(&sql)?;
+        }
+    }
     for t in crate::search::SHARD_TABLES {
         tx.execute_batch(&crate::search::shard_schema(t))?;
     }
-    tx.execute_batch(extra_schema)?;
     tx.execute("INSERT INTO meta(key, value) VALUES ('library', ?1)", [library.to_string()])?;
     tx.execute("INSERT INTO meta(key, value) VALUES ('seq', 0)", [])?;
     tx.commit()?;
-    Ok(())
+    Ok(deferred)
 }
 
 enum Probe {

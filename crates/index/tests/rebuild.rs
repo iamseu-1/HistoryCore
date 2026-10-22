@@ -59,7 +59,6 @@ fn dump(db: &Connection) -> Vec<String> {
         "SELECT i.doc, l.kind, l.ns, l.key FROM link l JOIN item i ON i.rowid = l.src",
         "SELECT ns, key, refs, present FROM target",
         "SELECT i.doc, m.category, m.first FROM member m JOIN item i ON i.rowid = m.doc",
-        "SELECT i.doc, n.n, n.text FROM note n JOIN item i ON i.rowid = n.doc",
         "SELECT i.doc, s.name FROM source s JOIN item i ON i.rowid = s.doc",
         "SELECT i.doc, x.entity FROM entity x JOIN item i ON i.rowid = x.doc",
         "SELECT i.doc, u.template FROM uses u JOIN item i ON i.rowid = u.doc",

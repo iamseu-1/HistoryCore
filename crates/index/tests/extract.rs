@@ -15,16 +15,16 @@ fn rowid(e: &Engine, doc: DocId) -> i64 {
     e.debug_index().query_row("SELECT rowid FROM item WHERE doc = ?1", [doc], |r| r.get(0)).unwrap()
 }
 
-/// 이 문서의 표 `table`에서 `col`(글)을 넣은 차례로.
+/// 이 문서의 표 `table`에서 `col`(글)을 값 차례로(문서 번호가 앞인 기본 키 표라 넣은 차례는 없다).
 fn texts(e: &Engine, table: &str, col: &str, doc: DocId) -> Vec<String> {
     let id = rowid(e, doc);
-    let mut st = e.debug_index().prepare(&format!("SELECT {col} FROM {table} WHERE doc = ?1 ORDER BY rowid")).unwrap();
+    let mut st = e.debug_index().prepare(&format!("SELECT {col} FROM {table} WHERE doc = ?1 ORDER BY {col}")).unwrap();
     st.query_map([id], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
 }
 
 fn link_keys(e: &Engine, doc: DocId) -> Vec<String> {
     let id = rowid(e, doc);
-    let mut st = e.debug_index().prepare("SELECT ns || ':' || key FROM link WHERE src = ?1 ORDER BY rowid").unwrap();
+    let mut st = e.debug_index().prepare("SELECT ns || ':' || key FROM link WHERE src = ?1 ORDER BY ns, key").unwrap();
     st.query_map([id], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
 }
 
@@ -48,14 +48,10 @@ fn links_categories_footnotes_sources_entities() {
     let mut e = Engine::open(&app).unwrap();
     let a = e.create(Namespace::Doc, "가", "[[임진왜란]] [[분류:조선]][[분류:전쟁]][* 『선조실록』 1권, 『난중일기』] [[연표:01A]] [[:분류:조선]]", "").unwrap();
     assert_eq!(link_keys(&e, a.doc), ["문서:임진왜란", "분류:조선"]);
-    assert_eq!(texts(&e, "member", "category", a.doc), ["조선", "전쟁"]);
-    let first: Vec<i64> = {
-        let mut st = e.debug_index().prepare("SELECT first FROM member WHERE doc = ?1 ORDER BY rowid").unwrap();
-        st.query_map([rowid(&e, a.doc)], |r| r.get(0)).unwrap().map(|r| r.unwrap()).collect()
-    };
-    assert_eq!(first, [1, 0]);
-    assert_eq!(texts(&e, "note", "text", a.doc).len(), 1);
-    assert_eq!(texts(&e, "source", "name", a.doc), ["선조실록", "난중일기"]);
+    assert_eq!(texts(&e, "member", "category", a.doc), ["전쟁", "조선"]);
+    let first: String = e.debug_index().query_row("SELECT category FROM member WHERE doc = ?1 AND first = 1", [rowid(&e, a.doc)], |r| r.get(0)).unwrap();
+    assert_eq!(first, "조선");
+    assert_eq!(texts(&e, "source", "name", a.doc), ["난중일기", "선조실록"]);
     assert_eq!(texts(&e, "entity", "entity", a.doc), ["01A"]);
     let home: Option<String> = e.debug_index().query_row("SELECT home FROM item WHERE doc = ?1", [a.doc], |r| r.get(0)).unwrap();
     assert_eq!(home.as_deref(), Some("조선"));

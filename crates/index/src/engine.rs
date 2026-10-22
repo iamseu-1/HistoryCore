@@ -2,19 +2,20 @@
 //! 색인은 `rev.seq` 눈금과 `stale` 표로 어디까지 했는지 안다 — 끊긴 저장 · 엔진 없이 들어온 판 · 바뀐 틀은 `step`이 따라잡는다.
 //! 열 때 통째로 다시 짓지 않는다(설계 5-5).
 use crate::extract::{extract, Extracted, PER_DOC};
-use crate::stats::{bump_new, bump_source, bump_years, count_edits, HomeOptions};
+use crate::stats::{bump_new, bump_ns, bump_source, bump_years, count_edits, HomeOptions};
 use crate::store::{meta_i64, set_meta, Index};
 use crate::search::{fts_match, parse_query, snippet, verify, SHARDS, SHARD_TABLES};
 use crate::tree::{summary_row, Children, Tree};
 use history_library::{Doc, DocId, DocSummary, Error, Hlc, Library, Namespace, RevId, Renamed, Result, Saved, WallClock};
-use history_namumark::{parse, plain_document, render, ObjectRef, Options, RenderOptions, Templates};
+use history_namumark::{plain_document, render, render_document, ObjectRef, RenderOptions, Templates};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-const ZSTD_LEVEL: i32 = 3;
+/// 모델 · 글자 압축 — 1이 3보다 두 배 가깝게 빠르고 크기는 조금 크다(통째 짓기에서 일꾼 몫이 크다).
+const ZSTD_LEVEL: i32 = 1;
 /// `step`이 한 번에 읽는 판 수.
 const STEP_BATCH: usize = 256;
 
@@ -187,10 +188,9 @@ pub(crate) fn prepare_doc(d: Doc, templates: &dyn Templates) -> Result<Prepared>
         return Ok(base(zip(&model)?, zip(b"")?, String::new(), None, None, Extracted::default()));
     }
     let options = RenderOptions { title: Some(d.title.clone()), template: d.ns == Namespace::Template };
-    let model = render(&d.body, &options, templates);
-    let tree = parse(&d.body, &Options { template: options.template, current: options.title.clone(), ..Options::default() });
+    let (model, tree) = render_document(&d.body, &options, templates);
     let plain = crate::search::stored_plain(&plain_document(&tree));
-    let tokens = crate::search::index_tokens(&plain).join(" ");
+    let tokens = crate::search::index_text(&plain);
     let home = tree.categories.first().cloned();
     let redirect = model.redirect.as_ref().and_then(library_target);
     let ex = extract(&model, &tree);
@@ -198,8 +198,19 @@ pub(crate) fn prepare_doc(d: Doc, templates: &dyn Templates) -> Result<Prepared>
     Ok(base(zip(&json)?, zip(plain.as_bytes())?, tokens, home, redirect, ex))
 }
 
+thread_local! {
+    /// 스레드마다 압축 문맥 하나 — 부를 때마다 만들면 작은 글에서는 압축보다 문맥 만들기가 더 든다.
+    static ZIP: std::cell::RefCell<Option<zstd::bulk::Compressor<'static>>> = const { std::cell::RefCell::new(None) };
+}
+
 pub(crate) fn zip(bytes: &[u8]) -> Result<Vec<u8>> {
-    Ok(zstd::bulk::compress(bytes, ZSTD_LEVEL)?)
+    ZIP.with(|z| {
+        let mut z = z.borrow_mut();
+        if z.is_none() {
+            *z = Some(zstd::bulk::Compressor::new(ZSTD_LEVEL)?);
+        }
+        Ok(z.as_mut().expect("압축 문맥").compress(bytes)?)
+    })
 }
 
 /// 한 문서의 색인 행을 모두 새로 쓴다. 문서 번호(rowid)는 처음 색인할 때 정해지고 바뀌지 않는다.
@@ -217,6 +228,10 @@ pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool, fts: bool) 
     if p.ns == Namespace::Doc && !p.deleted {
         bump_folder(db, p.home.as_deref().unwrap_or(""), 1)?;
     }
+    if let Some((_, ns, _, _, deleted)) = &prev {
+        bump_ns(db, *ns, *deleted, -1)?;
+    }
+    bump_ns(db, p.ns, p.deleted, 1)?;
     // 달마다 새 문서: 살아 있는 일반 문서가 되거나 그만둔 만큼(만든 시각의 달).
     let was_live = matches!(&prev, Some((_, Namespace::Doc, _, _, false)));
     let is_live = p.ns == Namespace::Doc && !p.deleted;
@@ -283,7 +298,7 @@ pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool, fts: bool) 
     if let Some((_, ns, title, _, was_deleted)) = &prev {
         if !*was_deleted && (p.deleted || *ns != p.ns || *title != p.title) {
             db.prepare_cached(
-                "UPDATE target SET present = EXISTS(SELECT 1 FROM item WHERE ns = ?3 AND title = ?2 AND deleted = 0) WHERE ns = ?1 AND key = ?2",
+                "UPDATE target SET present = EXISTS(SELECT 1 FROM item INDEXED BY item_title WHERE ns = ?3 AND title = ?2 AND deleted = 0) WHERE ns = ?1 AND key = ?2",
             )?
             .execute(params![ns.prefix(), title, ns])?;
         }
@@ -295,12 +310,13 @@ pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool, fts: bool) 
 /// 뽑기 표를 이 문서 번호의 새 행으로 바꾼다. 본문 링크는 대상별 문서 수(`target`), 사료 · 해는 셈 표도 고친다.
 /// 본문 링크 모음이 바뀌었으면 참.
 fn write_extracted(db: &Connection, rowid: i64, existed: bool, ex: &Extracted) -> Result<bool> {
-    let new_links: Vec<(String, String)> =
+    let mut new_links: Vec<(String, String)> =
         ex.links.iter().filter(|(k, ..)| *k == history_namumark::LinkKind::Body).map(|(_, ns, key)| (ns.clone(), key.clone())).collect();
+    new_links.sort();
     let mut links_changed = !new_links.is_empty();
     if existed {
         let old: Vec<(String, String)> = {
-            let mut st = db.prepare_cached("SELECT ns, key FROM link WHERE src = ?1 AND kind = 0 ORDER BY rowid")?;
+            let mut st = db.prepare_cached("SELECT ns, key FROM link WHERE src = ?1 AND kind = 0 ORDER BY ns, key")?;
             let rows = st.query_map([rowid], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
@@ -326,25 +342,23 @@ fn write_extracted(db: &Connection, rowid: i64, existed: bool, ex: &Extracted) -
         }
     }
     for (kind, ns, key) in &ex.links {
-        db.prepare_cached("INSERT INTO link(src, kind, ns, key) VALUES (?1, ?2, ?3, ?4)")?.execute(params![rowid, *kind as i64, ns, key])?;
+        db.prepare_cached("INSERT OR IGNORE INTO link(src, kind, ns, key) VALUES (?1, ?2, ?3, ?4)")?.execute(params![rowid, *kind as i64, ns, key])?;
         if *kind == history_namumark::LinkKind::Body {
-            let present = match Namespace::ALL.into_iter().find(|n| n.prefix() == ns) {
-                Some(code) => db
-                    .prepare_cached("SELECT EXISTS(SELECT 1 FROM item WHERE ns = ?1 AND title = ?2 AND deleted = 0)")?
-                    .query_row(params![code, key], |r| r.get::<_, bool>(0))?,
-                None => false,
-            };
-            db.prepare_cached(
-                "INSERT INTO target(ns, key, refs, present) VALUES (?1, ?2, 1, ?3) ON CONFLICT(ns, key) DO UPDATE SET refs = refs + 1",
-            )?
-            .execute(params![ns, key, present])?;
+            // 있던 대상이면 수만 올린다. 새 대상일 때만 그 제목의 문서가 있는지 찾는다(저장마다 링크 수만큼 찾지 않도록).
+            let bumped = db.prepare_cached("UPDATE target SET refs = refs + 1 WHERE ns = ?1 AND key = ?2")?.execute(params![ns, key])?;
+            if bumped == 0 {
+                let present = match Namespace::ALL.into_iter().find(|n| n.prefix() == ns) {
+                    Some(code) => db
+                        .prepare_cached("SELECT EXISTS(SELECT 1 FROM item INDEXED BY item_title WHERE ns = ?1 AND title = ?2 AND deleted = 0)")?
+                        .query_row(params![code, key], |r| r.get::<_, bool>(0))?,
+                    None => false,
+                };
+                db.prepare_cached("INSERT INTO target(ns, key, refs, present) VALUES (?1, ?2, 1, ?3)")?.execute(params![ns, key, present])?;
+            }
         }
     }
     for (i, c) in ex.categories.iter().enumerate() {
-        db.prepare_cached("INSERT INTO member(doc, category, first) VALUES (?1, ?2, ?3)")?.execute(params![rowid, c, i == 0])?;
-    }
-    for (i, f) in ex.footnotes.iter().enumerate() {
-        db.prepare_cached("INSERT INTO note(doc, n, text) VALUES (?1, ?2, ?3)")?.execute(params![rowid, i as i64 + 1, f])?;
+        db.prepare_cached("INSERT OR IGNORE INTO member(doc, category, first) VALUES (?1, ?2, ?3)")?.execute(params![rowid, c, i == 0])?;
     }
     for s in &ex.sources {
         db.prepare_cached("INSERT INTO source(doc, name) VALUES (?1, ?2)")?.execute(params![rowid, s])?;
@@ -500,7 +514,7 @@ impl Engine {
 
     /// 대문 모음(설계 8-2).
     pub fn home(&mut self, o: &HomeOptions) -> Result<crate::stats::Home> {
-        let counts = self.lib.counts()?;
+        let counts = crate::stats::counts(&self.idx.db)?;
         let wanted = self.links_wanted(o.wanted)?;
         if self.tree.is_none() {
             self.tree = Some(Tree::load(&self.idx.db)?);
@@ -618,12 +632,37 @@ impl Engine {
     }
 
     /// 있는 문서 ID — 같은 차례, 없으면 None. 제목은 정규화하고, 같은 제목이 둘이면 먼저 만든 것.
+    /// 색인의 덮는 제목 색인에서 읽는다(서재 표를 차갑게 찾아가지 않는다 — 색인이 낡았으면 그만큼 늦다).
     pub fn titles_exist(&self, titles: &[(Namespace, String)]) -> Result<Vec<Option<DocId>>> {
-        titles.iter().map(|(ns, t)| Ok(self.lib.by_title(*ns, t)?.into_iter().next().map(|d| d.id))).collect()
+        let mut st = self
+            .idx
+            .db
+            .prepare_cached("SELECT doc FROM item INDEXED BY item_title WHERE ns = ?1 AND title = ?2 AND deleted = 0 ORDER BY ns, title, created LIMIT 1")?;
+        let mut out = Vec::with_capacity(titles.len());
+        for (ns, t) in titles {
+            let found = match history_library::normalize_title(t) {
+                Ok(t) => st.query_row(params![ns, t], |r| r.get(0)).optional()?,
+                Err(_) => None,
+            };
+            out.push(found);
+        }
+        Ok(out)
     }
 
+    /// 제목이 `prefix`로 시작하는 살아 있는 문서(제목 차례) — 덮는 제목 색인 한 범위.
     pub fn search_titles(&self, ns: Namespace, prefix: &str, limit: usize) -> Result<Vec<DocSummary>> {
-        self.lib.titles_with_prefix(ns, prefix, limit)
+        use unicode_normalization::UnicodeNormalization;
+        let prefix: String = prefix.trim_start().nfc().collect();
+        if prefix.is_empty() {
+            return Ok(Vec::new());
+        }
+        let upper = format!("{prefix}\u{10FFFF}");
+        let mut st = self.idx.db.prepare_cached(
+            "SELECT doc, ns, title, rev, created, updated FROM item INDEXED BY item_title
+             WHERE ns = ?1 AND title >= ?2 AND title < ?3 AND deleted = 0 ORDER BY ns, title, created LIMIT ?4",
+        )?;
+        let rows = st.query_map(params![ns, prefix, upper, limit as i64], summary_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// 본문 찾기 — 조각 색인 넷을 문서 번호 차례로 합쳐 후보를 받고, 지운 · 낡은 문서는 건너뛰고, 확인을 지난 것만 `limit`까지.
@@ -632,6 +671,9 @@ impl Engine {
             return Ok(Vec::new());
         };
         let m = fts_match(&q);
+        // 색인이 서재와 같으면(눈금이 마지막 판 · 낡음 없음) 후보마다 머리 판을 묻지 않는다.
+        let stale_rows: i64 = self.idx.db.query_row("SELECT count(*) FROM stale", [], |r| r.get(0))?;
+        let fresh = stale_rows == 0 && self.idx.seq()? == self.lib.last_seq()?;
         let db = &self.idx.db;
         let mut stmts = Vec::with_capacity(SHARDS);
         for t in SHARD_TABLES {
@@ -658,7 +700,7 @@ impl Engine {
                 .query_row([rowid], |r| Ok((summary_row(r)?, r.get(6)?, r.get(7)?)))
                 .optional()?;
             let Some((doc, deleted, z)) = row else { continue };
-            if deleted || self.lib.summary(doc.id)?.map(|(s, _)| s.head) != Some(doc.head) {
+            if deleted || (!fresh && self.lib.summary(doc.id)?.map(|(s, _)| s.head) != Some(doc.head)) {
                 continue; // 지웠거나, 색인한 글이 머리 판보다 낡았다
             }
             let plain = unzip_with(&mut self.unz, &z)?;

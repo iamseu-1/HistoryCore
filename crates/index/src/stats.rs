@@ -11,8 +11,11 @@ pub(crate) const SCHEMA: &str = "
 CREATE TABLE stat_edit(hour INTEGER PRIMARY KEY, n INTEGER NOT NULL);
 -- 살아 있는 일반 문서가 만들어진 시마다 수.
 CREATE TABLE stat_new(hour INTEGER PRIMARY KEY, n INTEGER NOT NULL);
+-- 이름공간 · 지움별 문서 수 — 대문이 100만 편 서재 표를 훑지 않도록 색인이 세어 둔다.
+CREATE TABLE ns_count(ns INTEGER NOT NULL, deleted INTEGER NOT NULL, n INTEGER NOT NULL, PRIMARY KEY(ns, deleted)) WITHOUT ROWID;
 CREATE TABLE source_count(name TEXT PRIMARY KEY, refs INTEGER NOT NULL) WITHOUT ROWID;
 CREATE INDEX source_count_refs ON source_count(refs);
+
 CREATE TABLE decade(decade INTEGER PRIMARY KEY, docs INTEGER NOT NULL);
 CREATE TABLE group_link(a TEXT NOT NULL, b TEXT NOT NULL, links INTEGER NOT NULL, PRIMARY KEY(a, b)) WITHOUT ROWID;
 CREATE TABLE group_link_next(a TEXT NOT NULL, b TEXT NOT NULL, links INTEGER NOT NULL, PRIMARY KEY(a, b)) WITHOUT ROWID;
@@ -23,7 +26,7 @@ const DAY: i64 = 86_400_000;
 /// 다루는 해 하나가 세는 10년 칸의 한계(500년).
 const MAX_DECADES: i32 = 50;
 /// 갈래 사이 링크를 한 번에 세는 링크 수.
-const GROUP_CHUNK: i64 = 2_000;
+const GROUP_CHUNK: i64 = 200;
 
 pub struct HomeOptions {
     pub recent: usize,
@@ -132,23 +135,46 @@ pub(crate) fn bump_new(db: &Connection, created: Hlc, by: i64) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn bump_ns(db: &Connection, ns: Namespace, deleted: bool, by: i64) -> Result<()> {
+    db.prepare_cached("INSERT INTO ns_count(ns, deleted, n) VALUES (?1, ?2, ?3) ON CONFLICT(ns, deleted) DO UPDATE SET n = n + excluded.n")?
+        .execute(params![ns, deleted, by])?;
+    db.prepare_cached("DELETE FROM ns_count WHERE ns = ?1 AND deleted = ?2 AND n <= 0")?.execute(params![ns, deleted])?;
+    Ok(())
+}
+
+/// 색인이 세어 둔 문서 수(`library.counts`와 같은 모양, 색인이 낡았으면 그만큼 늦다).
+pub(crate) fn counts(db: &Connection) -> Result<Counts> {
+    let mut c = Counts::default();
+    let mut st = db.prepare_cached("SELECT ns, deleted, n FROM ns_count")?;
+    let mut rows = st.query([])?;
+    while let Some(r) = rows.next()? {
+        let (ns, deleted, n): (Namespace, bool, i64) = (r.get(0)?, r.get(1)?, r.get(2)?);
+        let n = n.max(0) as u64;
+        if deleted {
+            c.deleted += n;
+        } else {
+            c.live[ns as usize] += n;
+        }
+    }
+    Ok(c)
+}
+
 pub(crate) fn bump_source(db: &Connection, name: &str, by: i64) -> Result<()> {
     db.prepare_cached("INSERT INTO source_count(name, refs) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET refs = refs + excluded.refs")?.execute(params![name, by])?;
     db.prepare_cached("DELETE FROM source_count WHERE name = ?1 AND refs <= 0")?.execute([name])?;
     Ok(())
 }
 
-/// 다루는 해가 걸친 10년 칸마다(많아야 50칸).
+/// 다루는 해가 걸친 10년 칸(많아야 50칸).
+pub(crate) fn decades(y0: i32, y1: i32) -> impl Iterator<Item = i32> {
+    let (first, last) = (y0.div_euclid(10) * 10, y1.div_euclid(10) * 10);
+    (0..MAX_DECADES).map(move |k| first + 10 * k).take_while(move |d| *d <= last)
+}
+
 pub(crate) fn bump_years(db: &Connection, y0: i32, y1: i32, by: i64) -> Result<()> {
-    let first = y0.div_euclid(10) * 10;
-    let last = y1.div_euclid(10) * 10;
-    let mut d = first;
-    let mut n = 0;
-    while d <= last && n < MAX_DECADES {
+    for d in decades(y0, y1) {
         db.prepare_cached("INSERT INTO decade(decade, docs) VALUES (?1, ?2) ON CONFLICT(decade) DO UPDATE SET docs = docs + excluded.docs")?.execute(params![d, by])?;
         db.prepare_cached("DELETE FROM decade WHERE decade = ?1 AND docs <= 0")?.execute([d])?;
-        d += 10;
-        n += 1;
     }
     Ok(())
 }
@@ -277,17 +303,19 @@ pub(crate) fn count_group_links(db: &Connection, tree: &Tree, deadline: Instant)
         tx.commit()?;
         cursor = 1;
     }
+    let last: i64 = db.query_row("SELECT COALESCE(MAX(rowid), 0) FROM item", [], |r| r.get(0))?;
     while Instant::now() < deadline {
+        // 문서 번호 [cursor, cursor + GROUP_CHUNK)의 본문 링크.
         let rows: Vec<(i64, Option<String>, String, String)> = {
             let mut st = db.prepare_cached(
-                "SELECT l.rowid, s.home, l.ns, l.key FROM link l JOIN item s ON s.rowid = l.src
-                 WHERE l.rowid >= ?1 AND l.kind = 0 AND s.ns = 0 AND s.deleted = 0 ORDER BY l.rowid LIMIT ?2",
+                "SELECT l.src, s.home, l.ns, l.key FROM link l JOIN item s ON s.rowid = l.src
+                 WHERE l.src >= ?1 AND l.src < ?1 + ?2 AND l.kind = 0 AND s.ns = 0 AND s.deleted = 0",
             )?;
             let rows = st.query_map(params![cursor, GROUP_CHUNK], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
         let tx = db.unchecked_transaction()?;
-        if rows.is_empty() {
+        if cursor > last {
             tx.execute("DELETE FROM group_link", [])?;
             tx.execute("INSERT INTO group_link(a, b, links) SELECT a, b, links FROM group_link_next", [])?;
             tx.execute("DELETE FROM group_link_next", [])?;
@@ -303,7 +331,7 @@ pub(crate) fn count_group_links(db: &Connection, tree: &Tree, deadline: Instant)
             }
             let Some(from) = home.as_deref().and_then(|h| tree.group_of(h)) else { continue };
             let to_home: Option<Option<String>> = tx
-                .prepare_cached("SELECT home FROM item WHERE ns = 0 AND title = ?1 AND deleted = 0 ORDER BY created LIMIT 1")?
+                .prepare_cached("SELECT home FROM item INDEXED BY item_title WHERE ns = 0 AND title = ?1 AND deleted = 0 ORDER BY ns, title, created LIMIT 1")?
                 .query_row([key], |r| r.get(0))
                 .optional()?;
             let Some(to) = to_home.flatten().as_deref().and_then(|h| tree.group_of(h)).map(str::to_string) else { continue };
@@ -315,7 +343,7 @@ pub(crate) fn count_group_links(db: &Connection, tree: &Tree, deadline: Instant)
             tx.prepare_cached("INSERT INTO group_link_next(a, b, links) VALUES (?1, ?2, ?3) ON CONFLICT(a, b) DO UPDATE SET links = links + excluded.links")?
                 .execute(params![a, b, n])?;
         }
-        cursor = rows.last().map(|r| r.0 + 1).unwrap_or(cursor);
+        cursor += GROUP_CHUNK;
         set_meta(&tx, "gl_cursor", cursor)?;
         tx.commit()?;
     }

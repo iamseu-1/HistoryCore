@@ -1,0 +1,158 @@
+{
+  "library": "engine",
+  "device": "pc",
+  "docs": 1000000,
+  "seed": 20261021,
+  "load_ms": 2577303,
+  "load_parts": [
+    {
+      "label": "서재 들이기",
+      "value": 387025
+    },
+    {
+      "label": "색인 짓기",
+      "value": 2189557
+    },
+    {
+      "label": "(짓기: 읽기",
+      "value": 25875
+    },
+    {
+      "label": "해석 · 쓰기 · 조각 넷",
+      "value": 1780023
+    },
+    {
+      "label": "조각 옮기기 · ANALYZE",
+      "value": 383165
+    },
+    {
+      "label": "바꿔 끼우기",
+      "value": 155
+    },
+    {
+      "label": "일꾼 합",
+      "value": 1186060
+    },
+    {
+      "label": "쓰는 쪽",
+      "value": 136559
+    },
+    {
+      "label": "조각 하나 최대)",
+      "value": 107133
+    }
+  ],
+  "bytes_on_disk": 12370247680,
+  "disk_parts": [
+    {
+      "label": "원본 library.db",
+      "value": 3130802176
+    },
+    {
+      "label": "색인 index.db",
+      "value": 9239445504
+    }
+  ],
+  "ops": [
+    {
+      "op": "FindTitle",
+      "count": 2000,
+      "p50_us": 1232,
+      "p95_us": 10101,
+      "p99_us": 64974,
+      "max_us": 1276690
+    },
+    {
+      "op": "SearchBody",
+      "count": 1000,
+      "p50_us": 628,
+      "p95_us": 7056,
+      "p99_us": 28035,
+      "max_us": 159128
+    },
+    {
+      "op": "Open",
+      "count": 2000,
+      "p50_us": 707,
+      "p95_us": 2667,
+      "p99_us": 7559,
+      "max_us": 117744
+    },
+    {
+      "op": "CategoryChildren",
+      "count": 500,
+      "p50_us": 2432,
+      "p95_us": 17360,
+      "p99_us": 60499,
+      "max_us": 1137579
+    },
+    {
+      "op": "HomeAggregates",
+      "count": 50,
+      "p50_us": 1630,
+      "p95_us": 3160,
+      "p99_us": 5983,
+      "max_us": 5983
+    },
+    {
+      "op": "Save",
+      "count": 300,
+      "p50_us": 25566,
+      "p95_us": 319965,
+      "p99_us": 543811,
+      "max_us": 690153
+    },
+    {
+      "op": "Startup",
+      "count": 5,
+      "p50_us": 817473,
+      "p95_us": 959572,
+      "p99_us": 959572,
+      "max_us": 959572
+    }
+  ],
+  "verdicts": [
+    {
+      "label": "제목 찾기 p99 ≤ 10ms",
+      "limit_us": 10000,
+      "measured_us": 64974,
+      "pass": false
+    },
+    {
+      "label": "본문 찾기 첫 20건 p95 ≤ 10ms",
+      "limit_us": 10000,
+      "measured_us": 7056,
+      "pass": true
+    },
+    {
+      "label": "문서 열기 p95 ≤ 16ms",
+      "limit_us": 16000,
+      "measured_us": 2667,
+      "pass": true
+    },
+    {
+      "label": "저장 한 편 p95 ≤ 50ms",
+      "limit_us": 50000,
+      "measured_us": 319965,
+      "pass": false
+    },
+    {
+      "label": "분류 폴더 하나 펼치기 ≤ 16ms",
+      "limit_us": 16000,
+      "measured_us": 17360,
+      "pass": false
+    },
+    {
+      "label": "대문 · 통계 모음 ≤ 50ms",
+      "limit_us": 50000,
+      "measured_us": 3160,
+      "pass": true
+    },
+    {
+      "label": "앱 시작 → 대문 ≤ 1초(엔진 몫)",
+      "limit_us": 1000000,
+      "measured_us": 959572,
+      "pass": true
+    }
+  ]
+}

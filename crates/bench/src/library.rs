@@ -28,4 +28,12 @@ pub trait Library {
     /// 닫았다 다시 연다(앱 시작의 엔진 몫).
     fn reopen(&mut self) -> Result<()>;
     fn bytes_on_disk(&self) -> Result<u64>;
+    /// 들이기를 나눈 몫(이름, ms) — 엔진은 서재 들이기와 색인 짓기.
+    fn load_parts(&self) -> Vec<(&'static str, u64)> {
+        Vec::new()
+    }
+    /// 저장 공간을 나눈 몫(이름, 바이트).
+    fn disk_parts(&self) -> Vec<(&'static str, u64)> {
+        Vec::new()
+    }
 }
