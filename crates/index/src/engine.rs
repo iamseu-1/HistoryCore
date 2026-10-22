@@ -2,10 +2,11 @@
 //! 색인은 `rev.seq` 눈금과 `stale` 표로 어디까지 했는지 안다 — 끊긴 저장 · 엔진 없이 들어온 판 · 바뀐 틀은 `step`이 따라잡는다.
 //! 열 때 통째로 다시 짓지 않는다(설계 5-5).
 use crate::extract::{extract, Extracted, PER_DOC};
+use crate::stats::{bump_new, bump_source, bump_years, count_edits, HomeOptions};
 use crate::store::{meta_i64, set_meta, Index};
 use crate::search::{fts_match, parse_query, snippet, verify, SHARDS, SHARD_TABLES};
 use crate::tree::{summary_row, Children, Tree};
-use history_library::{DocId, DocSummary, Error, Library, Namespace, RevId, Renamed, Result, Saved};
+use history_library::{Doc, DocId, DocSummary, Error, Hlc, Library, Namespace, RevId, Renamed, Result, Saved, WallClock};
 use history_namumark::{parse, plain_document, render, ObjectRef, Options, RenderOptions, Templates};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::cell::RefCell;
@@ -67,13 +68,16 @@ pub struct Engine {
     pub(crate) idx: Index,
     unz: zstd::bulk::Decompressor<'static>,
     /// 분류 나무 — 처음 물을 때 지어 두고, 색인이 바뀌면 버린다.
-    tree: Option<Tree>,
+    pub(crate) tree: Option<Tree>,
     /// 시험용 — 참이면 저장 뒤 색인 트랜잭션을 커밋하기 직전에 끊는다(서재 커밋은 된 채).
     #[doc(hidden)]
     pub fail_before_index_commit: bool,
     /// 시험용 — 참이면 틀 원문 읽기가 모두 실패한다.
     #[doc(hidden)]
     pub fail_template_reads: bool,
+    /// 시험용 — 통째 짓기를 이만큼 쓴 뒤 끊는다.
+    #[doc(hidden)]
+    pub fail_rebuild_after: Option<u64>,
 }
 
 /// 한 문서를 색인할 것 — 읽기(서재 · 틀)와 셈은 여기까지, 쓰기는 `write`가 한다.
@@ -152,6 +156,17 @@ pub(crate) fn prepare(lib: &Library, doc: DocId, fail_templates: bool) -> Result
     let Some(d) = lib.get(doc)? else {
         return Ok(None);
     };
+    let templates = if fail_templates { LibraryTemplates::failing(lib) } else { LibraryTemplates::new(lib) };
+    let p = prepare_doc(d, &templates)?;
+    if let Some(e) = templates.take_error() {
+        return Err(e);
+    }
+    Ok(Some(p))
+}
+
+/// 읽어 둔 문서를 그리고 뽑는다. 틀 읽기 오류는 `templates`가 붙잡는다.
+pub(crate) fn prepare_doc(d: Doc, templates: &dyn Templates) -> Result<Prepared> {
+    let doc = d.id;
     let base = |model: Vec<u8>, plain: Vec<u8>, tokens: String, home, redirect, ex| Prepared {
         doc,
         rev: d.head,
@@ -169,14 +184,10 @@ pub(crate) fn prepare(lib: &Library, doc: DocId, fail_templates: bool) -> Result
     };
     if d.deleted {
         let model = serde_json::to_vec(&render("", &RenderOptions::default(), &history_namumark::NoTemplates)).expect("모델 JSON");
-        return Ok(Some(base(zip(&model)?, zip(b"")?, String::new(), None, None, Extracted::default())));
+        return Ok(base(zip(&model)?, zip(b"")?, String::new(), None, None, Extracted::default()));
     }
-    let templates = if fail_templates { LibraryTemplates::failing(lib) } else { LibraryTemplates::new(lib) };
     let options = RenderOptions { title: Some(d.title.clone()), template: d.ns == Namespace::Template };
-    let model = render(&d.body, &options, &templates);
-    if let Some(e) = templates.take_error() {
-        return Err(e);
-    }
+    let model = render(&d.body, &options, templates);
     let tree = parse(&d.body, &Options { template: options.template, current: options.title.clone(), ..Options::default() });
     let plain = crate::search::stored_plain(&plain_document(&tree));
     let tokens = crate::search::index_tokens(&plain).join(" ");
@@ -184,7 +195,7 @@ pub(crate) fn prepare(lib: &Library, doc: DocId, fail_templates: bool) -> Result
     let redirect = model.redirect.as_ref().and_then(library_target);
     let ex = extract(&model, &tree);
     let json = serde_json::to_vec(&model).expect("모델 JSON");
-    Ok(Some(base(zip(&json)?, zip(plain.as_bytes())?, tokens, home, redirect, ex)))
+    Ok(base(zip(&json)?, zip(plain.as_bytes())?, tokens, home, redirect, ex))
 }
 
 pub(crate) fn zip(bytes: &[u8]) -> Result<Vec<u8>> {
@@ -193,7 +204,8 @@ pub(crate) fn zip(bytes: &[u8]) -> Result<Vec<u8>> {
 
 /// 한 문서의 색인 행을 모두 새로 쓴다. 문서 번호(rowid)는 처음 색인할 때 정해지고 바뀌지 않는다.
 /// `mark_users`면, 틀 문서일 때 그 틀(옛 제목 · 새 제목)을 쓰는 문서를 낡음으로 넣는다(통째 짓기는 모두 새로 그리므로 끈다).
-pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool) -> Result<i64> {
+/// `fts`가 거짓이면 조각 색인은 건드리지 않는다(통째 짓기는 따로 나란히 짓는다).
+pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool, fts: bool) -> Result<i64> {
     let prev: Option<(i64, Namespace, String, Option<String>, bool)> = db
         .prepare_cached("SELECT rowid, ns, title, home, deleted FROM item WHERE doc = ?1")?
         .query_row(params![p.doc], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
@@ -205,6 +217,16 @@ pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool) -> Result<i
     if p.ns == Namespace::Doc && !p.deleted {
         bump_folder(db, p.home.as_deref().unwrap_or(""), 1)?;
     }
+    // 달마다 새 문서: 살아 있는 일반 문서가 되거나 그만둔 만큼(만든 시각의 달).
+    let was_live = matches!(&prev, Some((_, Namespace::Doc, _, _, false)));
+    let is_live = p.ns == Namespace::Doc && !p.deleted;
+    if was_live != is_live {
+        bump_new(db, Hlc(p.created), if is_live { 1 } else { -1 })?;
+    }
+    let home_moved = match &prev {
+        Some((_, ns, _, home, deleted)) => *ns != p.ns || *deleted != p.deleted || *home != p.home,
+        None => true,
+    };
     if mark_users {
         let mut paths = Vec::new();
         if p.ns == Namespace::Template {
@@ -233,7 +255,9 @@ pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool) -> Result<i
                 "UPDATE item SET rev = ?2, ns = ?3, title = ?4, home = ?5, rns = ?6, rkey = ?7, created = ?8, updated = ?9, deleted = ?10 WHERE rowid = ?1",
             )?
             .execute(params![rowid, p.rev, p.ns, p.title, p.home, rns, rkey, p.created as i64, p.updated as i64, p.deleted])?;
-            db.prepare_cached(&format!("DELETE FROM {} WHERE rowid = ?1", fts_of(rowid)))?.execute([rowid])?;
+            if fts {
+                db.prepare_cached(&format!("DELETE FROM {} WHERE rowid = ?1", fts_of(rowid)))?.execute([rowid])?;
+            }
             rowid
         }
         None => {
@@ -244,10 +268,14 @@ pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool) -> Result<i
     };
     db.prepare_cached("INSERT OR REPLACE INTO model(rowid, z) VALUES (?1, ?2)")?.execute(params![rowid, p.model])?;
     db.prepare_cached("INSERT OR REPLACE INTO plain(rowid, z) VALUES (?1, ?2)")?.execute(params![rowid, p.plain])?;
-    if !p.deleted && !p.tokens.is_empty() {
+    if fts && !p.deleted && !p.tokens.is_empty() {
         db.prepare_cached(&format!("INSERT INTO {}(rowid, t) VALUES (?1, ?2)", fts_of(rowid)))?.execute(params![rowid, p.tokens])?;
     }
-    write_extracted(db, rowid, old.is_some(), &p.ex)?;
+    let links_changed = write_extracted(db, rowid, old.is_some(), &p.ex)?;
+    // 갈래 사이 링크는 링크 · 집 · 분류 나무가 바뀔 때만 다시 센다(본문 글만 고친 저장은 세지 않는다).
+    if links_changed || home_moved || p.ns == Namespace::Category {
+        set_meta(db, "stats_dirty", 1)?;
+    }
     // 이 제목을 가리키던 링크가 만들 문서인지 다시 정한다(새 제목은 있음, 떠난 옛 제목은 다른 문서가 남았는지).
     if !p.deleted {
         db.prepare_cached("UPDATE target SET present = 1 WHERE ns = ?1 AND key = ?2")?.execute(params![p.ns.prefix(), p.title])?;
@@ -264,14 +292,31 @@ pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool) -> Result<i
     Ok(rowid)
 }
 
-/// 뽑기 표를 이 문서 번호의 새 행으로 바꾼다. 본문 링크는 대상별 문서 수(`target`)도 고친다.
-fn write_extracted(db: &Connection, rowid: i64, existed: bool, ex: &Extracted) -> Result<()> {
+/// 뽑기 표를 이 문서 번호의 새 행으로 바꾼다. 본문 링크는 대상별 문서 수(`target`), 사료 · 해는 셈 표도 고친다.
+/// 본문 링크 모음이 바뀌었으면 참.
+fn write_extracted(db: &Connection, rowid: i64, existed: bool, ex: &Extracted) -> Result<bool> {
+    let new_links: Vec<(String, String)> =
+        ex.links.iter().filter(|(k, ..)| *k == history_namumark::LinkKind::Body).map(|(_, ns, key)| (ns.clone(), key.clone())).collect();
+    let mut links_changed = !new_links.is_empty();
     if existed {
         let old: Vec<(String, String)> = {
-            let mut st = db.prepare_cached("SELECT ns, key FROM link WHERE src = ?1 AND kind = 0")?;
+            let mut st = db.prepare_cached("SELECT ns, key FROM link WHERE src = ?1 AND kind = 0 ORDER BY rowid")?;
             let rows = st.query_map([rowid], |r| Ok((r.get(0)?, r.get(1)?)))?;
             rows.collect::<rusqlite::Result<_>>()?
         };
+        links_changed = old != new_links;
+        let sources: Vec<String> = {
+            let mut st = db.prepare_cached("SELECT name FROM source WHERE doc = ?1")?;
+            let rows = st.query_map([rowid], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for s in sources {
+            bump_source(db, &s, -1)?;
+        }
+        let years: Option<(i32, i32)> = db.prepare_cached("SELECT y0, y1 FROM years WHERE doc = ?1")?.query_row([rowid], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        if let Some((y0, y1)) = years {
+            bump_years(db, y0, y1, -1)?;
+        }
         for (ns, key) in old {
             db.prepare_cached("UPDATE target SET refs = refs - 1 WHERE ns = ?1 AND key = ?2")?.execute(params![ns, key])?;
             db.prepare_cached("DELETE FROM target WHERE ns = ?1 AND key = ?2 AND refs <= 0")?.execute(params![ns, key])?;
@@ -303,6 +348,7 @@ fn write_extracted(db: &Connection, rowid: i64, existed: bool, ex: &Extracted) -
     }
     for s in &ex.sources {
         db.prepare_cached("INSERT INTO source(doc, name) VALUES (?1, ?2)")?.execute(params![rowid, s])?;
+        bump_source(db, s, 1)?;
     }
     for e in &ex.entities {
         db.prepare_cached("INSERT INTO entity(doc, entity) VALUES (?1, ?2)")?.execute(params![rowid, e])?;
@@ -312,8 +358,9 @@ fn write_extracted(db: &Connection, rowid: i64, existed: bool, ex: &Extracted) -
     }
     if let Some((y0, y1)) = ex.years {
         db.prepare_cached("INSERT INTO years(doc, y0, y1) VALUES (?1, ?2, ?3)")?.execute(params![rowid, y0, y1])?;
+        bump_years(db, y0, y1, 1)?;
     }
-    Ok(())
+    Ok(links_changed)
 }
 
 fn bump_folder(db: &Connection, name: &str, by: i64) -> Result<()> {
@@ -336,9 +383,25 @@ fn mark_stale(db: &Connection, doc: DocId) -> Result<()> {
 impl Engine {
     /// 앱 자료 폴더의 `HistoryCore/`에서 서재와 색인을 연다. 색인이 없거나 다시 지어야 하면 빈 색인을 만들 뿐, 짓지는 않는다.
     pub fn open(app_dir: &Path) -> Result<Engine> {
-        let lib = Library::open(app_dir)?;
-        let idx = Index::open(&lib.info().folder, lib.info().library, crate::EXTRA_SCHEMA)?;
-        Ok(Engine { lib, idx, unz: zstd::bulk::Decompressor::new()?, tree: None, fail_before_index_commit: false, fail_template_reads: false })
+        Self::with_library(Library::open(app_dir)?)
+    }
+
+    /// 벽시계를 바꿔 끼워 연다(시험 — 날 · 달 셈).
+    pub fn open_with_clock(app_dir: &Path, wall: WallClock) -> Result<Engine> {
+        Self::with_library(Library::open_with_clock(app_dir, wall)?)
+    }
+
+    fn with_library(lib: Library) -> Result<Engine> {
+        let idx = Index::open(&lib.info().folder, lib.info().library, &crate::extra_schema())?;
+        Ok(Engine {
+            lib,
+            idx,
+            unz: zstd::bulk::Decompressor::new()?,
+            tree: None,
+            fail_before_index_commit: false,
+            fail_template_reads: false,
+            fail_rebuild_after: None,
+        })
     }
 
     pub fn status(&self) -> Result<IndexStatus> {
@@ -367,19 +430,22 @@ impl Engine {
                 break;
             }
             let tx = self.idx.db.transaction()?;
-            let (mut seen, mut new_w) = (HashSet::new(), w);
-            for (seq, doc) in revs {
+            let (mut seen, mut new_w, mut times) = (HashSet::new(), w, Vec::new());
+            for (seq, doc, hlc) in revs {
                 if seen.insert(doc) {
                     index_one(&self.lib, &tx, doc, self.fail_template_reads)?;
                     done += 1;
                 }
                 new_w = seq;
+                times.push(hlc); // 판마다 한 번 — 눈금이 판을 한 번만 지난다
                 if start.elapsed() >= max {
+                    count_edits(&tx, &times)?;
                     set_meta(&tx, "seq", new_w)?;
                     tx.commit()?;
                     break 'revs;
                 }
             }
+            count_edits(&tx, &times)?;
             set_meta(&tx, "seq", new_w)?;
             tx.commit()?;
         }
@@ -397,7 +463,7 @@ impl Engine {
             for doc in docs {
                 match prepare(&self.lib, doc, self.fail_template_reads) {
                     Ok(Some(p)) => {
-                        write(&tx, &p, true)?;
+                        write(&tx, &p, true, true)?;
                         progressed = true;
                     }
                     Ok(None) => {
@@ -416,7 +482,35 @@ impl Engine {
                 break;
             }
         }
+        // 남는 시간에 갈래 사이 링크를 센다.
+        if start.elapsed() < max && crate::stats::pending(&self.idx.db)? {
+            if self.tree.is_none() {
+                self.tree = Some(Tree::load(&self.idx.db)?);
+            }
+            let tree = self.tree.as_ref().expect("나무");
+            crate::stats::count_group_links(&self.idx.db, tree, start + max)?;
+        }
         Ok(StepReport { done, stale: self.status()?.stale })
+    }
+
+    /// 갈래 사이 링크를 다시 세야 하거나 세는 중인가.
+    pub fn stats_pending(&self) -> Result<bool> {
+        crate::stats::pending(&self.idx.db)
+    }
+
+    /// 대문 모음(설계 8-2).
+    pub fn home(&mut self, o: &HomeOptions) -> Result<crate::stats::Home> {
+        let counts = self.lib.counts()?;
+        let wanted = self.links_wanted(o.wanted)?;
+        if self.tree.is_none() {
+            self.tree = Some(Tree::load(&self.idx.db)?);
+        }
+        crate::stats::home(&self.idx.db, self.tree.as_ref().expect("나무"), counts, wanted, o)
+    }
+
+    /// 서재 통계. 날 · 달은 `tz_minutes` 시간대로, 「오늘」은 `today_ms`(없으면 지금).
+    pub fn stats(&self, tz_minutes: i32, today_ms: Option<u64>) -> Result<crate::stats::Stats> {
+        crate::stats::stats(&self.idx.db, tz_minutes, today_ms)
     }
 
     pub fn create(&mut self, ns: Namespace, title: &str, body: &str, message: &str) -> Result<Saved> {
@@ -467,7 +561,9 @@ impl Engine {
             index_one(&self.lib, &tx, doc, self.fail_template_reads)?;
         }
         if w == before {
-            // 이 저장 앞의 판은 모두 색인에 있었다 — 눈금을 이 저장 뒤로 옮긴다.
+            // 이 저장 앞의 판은 모두 색인에 있었다 — 눈금을 이 저장 뒤로 옮기고, 그 판들을 날마다 고친 횟수에 센다.
+            let times: Vec<Hlc> = self.lib.revisions_after(before, usize::MAX)?.into_iter().map(|(_, _, h)| h).collect();
+            count_edits(&tx, &times)?;
             set_meta(&tx, "seq", last)?;
         }
         if self.fail_before_index_commit {
@@ -494,7 +590,7 @@ impl Engine {
                 let p = prepare(&self.lib, doc, self.fail_template_reads)?.ok_or_else(|| Error::NotFound(format!("문서 {doc}")))?;
                 let redirect = p.redirect.clone();
                 let tx = self.idx.db.transaction()?;
-                let rowid = write(&tx, &p, true)?;
+                let rowid = write(&tx, &p, true, true)?;
                 tx.commit()?;
                 self.tree = None;
                 (rowid, redirect, true)
@@ -619,14 +715,6 @@ impl Engine {
         self.tree.as_ref().expect("나무").children(&self.idx.db, category, limit, after)
     }
 
-    /// 분류 나무(대문 · 통계가 갈래를 셀 때).
-    pub(crate) fn tree(&mut self) -> Result<&Tree> {
-        if self.tree.is_none() {
-            self.tree = Some(Tree::load(&self.idx.db)?);
-        }
-        Ok(self.tree.as_ref().expect("나무"))
-    }
-
     /// 색인 연결(시험 · 측정이 표를 들여다볼 때).
     #[doc(hidden)]
     pub fn debug_index(&self) -> &Connection {
@@ -657,7 +745,7 @@ pub(crate) fn unzip_with(unz: &mut zstd::bulk::Decompressor<'static>, z: &[u8]) 
 fn index_one(lib: &Library, tx: &Connection, doc: DocId, fail_templates: bool) -> Result<()> {
     match prepare(lib, doc, fail_templates) {
         Ok(Some(p)) => {
-            write(tx, &p, true)?;
+            write(tx, &p, true, true)?;
         }
         Ok(None) => {}
         Err(_) => mark_stale(tx, doc)?,

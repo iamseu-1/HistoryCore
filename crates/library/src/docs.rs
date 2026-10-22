@@ -291,11 +291,41 @@ impl Library {
         Ok(self.db.query_row("SELECT COALESCE(MAX(seq), 0) FROM rev", [], |r| r.get(0))?)
     }
 
-    /// 판 번호 `after` 뒤의 판(번호 차례), 많아야 `limit` — (번호, 문서).
-    pub fn revisions_after(&self, after: i64, limit: usize) -> Result<Vec<(i64, DocId)>> {
-        let mut st = self.db.prepare_cached("SELECT seq, doc FROM rev WHERE seq > ?1 ORDER BY seq LIMIT ?2")?;
-        let rows = st.query_map(params![after, limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    /// 판 번호 `after` 뒤의 판(번호 차례), 많아야 `limit` — (번호, 문서, 시각).
+    pub fn revisions_after(&self, after: i64, limit: usize) -> Result<Vec<(i64, DocId, Hlc)>> {
+        let mut st = self.db.prepare_cached("SELECT seq, doc, hlc FROM rev WHERE seq > ?1 ORDER BY seq LIMIT ?2")?;
+        let rows = st.query_map(params![after, limit.min(i64::MAX as usize) as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// 판 번호 `upto`까지 모든 판의 시각(통째 짓기가 날마다 고친 횟수를 센다).
+    pub fn revision_times(&self, upto: i64) -> Result<Vec<Hlc>> {
+        let mut st = self.db.prepare("SELECT hlc FROM rev WHERE seq <= ?1")?;
+        let rows = st.query_map([upto], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// 모든 문서 ID(만든 차례, 지운 것 포함) — 통째 짓기.
+    pub fn doc_ids(&self) -> Result<Vec<DocId>> {
+        let mut st = self.db.prepare("SELECT id FROM doc ORDER BY created, id")?;
+        let rows = st.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// 이 이름공간의 살아 있는 문서(만든 차례).
+    pub fn live_docs(&self, ns: Namespace) -> Result<Vec<DocSummary>> {
+        let mut st = self.db.prepare_cached("SELECT id, ns, title, head, created, updated FROM doc WHERE ns = ?1 AND deleted = 0 ORDER BY created, id")?;
+        let rows = st.query_map([ns], |r| {
+            Ok(DocSummary { id: r.get(0)?, ns: r.get(1)?, title: r.get(2)?, head: r.get(3)?, created: r.get(4)?, updated: r.get(5)? })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// 같은 서재 파일을 읽기 전용으로 따로 연다 — 다른 스레드에서 읽을 때(통째 짓기).
+    pub fn reader(&self) -> Result<Reader> {
+        let path = self.info.folder.join(crate::store::FILE);
+        let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        Ok(Reader { db })
     }
 
     /// 판 번호 `after` 뒤에 판이 생긴 문서 수.
@@ -331,6 +361,35 @@ impl Library {
             }
         }
         Ok(counts)
+    }
+}
+
+/// 읽기 전용 연결 하나(`Library::reader`). 다른 스레드로 옮길 수 있다.
+pub struct Reader {
+    db: Connection,
+}
+
+impl Reader {
+    pub fn get(&self, doc: DocId) -> Result<Option<Doc>> {
+        let h = match load_head(&self.db, doc) {
+            Ok(h) => h,
+            Err(Error::NotFound(_)) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        let body = read_body(&self.db, h.head)?;
+        Ok(Some(Doc { id: doc, ns: h.ns, title: h.title, head: h.head, created: h.created, updated: h.updated, deleted: h.deleted, body }))
+    }
+
+    /// 이름공간 · 제목이 같은 살아 있는 문서 중 먼저 만든 것.
+    pub fn first_by_title(&self, ns: Namespace, title: &str) -> Result<Option<DocId>> {
+        let Ok(title) = normalize_title(title) else {
+            return Ok(None);
+        };
+        Ok(self
+            .db
+            .prepare_cached("SELECT id FROM doc WHERE ns = ?1 AND title = ?2 AND deleted = 0 ORDER BY created, id LIMIT 1")?
+            .query_row(params![ns, title], |r| r.get(0))
+            .optional()?)
     }
 }
 

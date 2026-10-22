@@ -47,7 +47,7 @@ impl Index {
     /// 새로 만든다(그 파일만). 남의 SQLite면 `NotALibrary`로 건드리지 않는다. 남은 `.building`은 지운다.
     pub(crate) fn open(folder: &Path, library: LibraryId, extra_schema: &str) -> Result<Index> {
         let path = folder.join(FILE);
-        let _ = std::fs::remove_file(folder.join(BUILDING));
+        crate::rebuild::remove_leftovers(folder)?;
         match probe(&path, library)? {
             Probe::Ours => {}
             Probe::Missing => {}
@@ -60,6 +60,11 @@ impl Index {
             create(&db, library, extra_schema)?;
         }
         Ok(Index { db, path })
+    }
+
+    /// 통째 짓기가 파일을 바꿔 끼우는 동안 잠깐 드는 빈 색인.
+    pub(crate) fn placeholder() -> Result<Index> {
+        Ok(Index { db: Connection::open_in_memory()?, path: PathBuf::new() })
     }
 
     /// 눈금 — 이 판 번호(`rev.seq`)까지의 판은 모두 색인에 들었다.
