@@ -202,6 +202,7 @@ dependencies = [
  "history_corpus",
  "history_library",
  "history_namumark",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

@@ -1,6 +1,7 @@
 //! 엔진 = 서재(원본) + 색인(파생). 쓰는 일은 서재에 먼저 커밋하고, 같은 호출 안에서 그 문서를 색인한다.
 //! 색인은 `rev.seq` 눈금과 `stale` 표로 어디까지 했는지 안다 — 끊긴 저장 · 엔진 없이 들어온 판 · 바뀐 틀은 `step`이 따라잡는다.
 //! 열 때 통째로 다시 짓지 않는다(설계 5-5).
+use crate::extract::{extract, Extracted, PER_DOC};
 use crate::store::{meta_i64, set_meta, Index};
 use history_library::{DocId, DocSummary, Error, Library, Namespace, RevId, Renamed, Result, Saved};
 use history_namumark::{parse, plain_document, render, ObjectRef, Options, RenderOptions, Templates};
@@ -49,6 +50,9 @@ pub struct Engine {
     /// 시험용 — 참이면 저장 뒤 색인 트랜잭션을 커밋하기 직전에 끊는다(서재 커밋은 된 채).
     #[doc(hidden)]
     pub fail_before_index_commit: bool,
+    /// 시험용 — 참이면 틀 원문 읽기가 모두 실패한다.
+    #[doc(hidden)]
+    pub fail_template_reads: bool,
 }
 
 /// 한 문서를 색인할 것 — 읽기(서재 · 틀)와 셈은 여기까지, 쓰기는 `write`가 한다.
@@ -65,17 +69,25 @@ pub(crate) struct Prepared {
     pub(crate) model: Vec<u8>,
     pub(crate) plain: Vec<u8>,
     pub(crate) tokens: String,
+    pub(crate) ex: Extracted,
 }
 
 /// 서재에서 틀 원문을 읽는다. 읽기 오류는 붙잡아 두었다가 그리기가 끝난 뒤 오류로 낸다 — `missing`으로 굳지 않도록(P2-2 미룬 것).
 pub struct LibraryTemplates<'a> {
     lib: &'a Library,
     error: RefCell<Option<Error>>,
+    fail: bool,
 }
 
 impl<'a> LibraryTemplates<'a> {
     pub fn new(lib: &'a Library) -> Self {
-        LibraryTemplates { lib, error: RefCell::new(None) }
+        LibraryTemplates { lib, error: RefCell::new(None), fail: false }
+    }
+
+    /// 시험용 — 모든 읽기가 실패한다.
+    #[doc(hidden)]
+    pub fn failing(lib: &'a Library) -> Self {
+        LibraryTemplates { lib, error: RefCell::new(None), fail: true }
     }
 
     /// 그리는 동안 난 첫 읽기 오류.
@@ -84,6 +96,9 @@ impl<'a> LibraryTemplates<'a> {
     }
 
     fn read(&self, target: &ObjectRef) -> Result<Option<String>> {
+        if self.fail {
+            return Err(Error::Injected);
+        }
         let Some(ns) = Namespace::ALL.into_iter().find(|n| n.prefix() == target.ns) else {
             return Ok(None);
         };
@@ -112,11 +127,11 @@ pub(crate) fn library_target(r: &ObjectRef) -> Option<(Namespace, String)> {
 }
 
 /// 한 문서를 읽고 그린다. 서재에 없으면 None. 읽기 오류(서재 · 틀)는 Err — 부르는 쪽이 그 문서를 낡음으로 남긴다.
-pub(crate) fn prepare(lib: &Library, doc: DocId) -> Result<Option<Prepared>> {
+pub(crate) fn prepare(lib: &Library, doc: DocId, fail_templates: bool) -> Result<Option<Prepared>> {
     let Some(d) = lib.get(doc)? else {
         return Ok(None);
     };
-    let base = |model: Vec<u8>, plain: Vec<u8>, tokens: String, home, redirect| Prepared {
+    let base = |model: Vec<u8>, plain: Vec<u8>, tokens: String, home, redirect, ex| Prepared {
         doc,
         rev: d.head,
         ns: d.ns,
@@ -129,12 +144,13 @@ pub(crate) fn prepare(lib: &Library, doc: DocId) -> Result<Option<Prepared>> {
         model,
         plain,
         tokens,
+        ex,
     };
     if d.deleted {
         let model = serde_json::to_vec(&render("", &RenderOptions::default(), &history_namumark::NoTemplates)).expect("모델 JSON");
-        return Ok(Some(base(zip(&model)?, zip(b"")?, String::new(), None, None)));
+        return Ok(Some(base(zip(&model)?, zip(b"")?, String::new(), None, None, Extracted::default())));
     }
-    let templates = LibraryTemplates::new(lib);
+    let templates = if fail_templates { LibraryTemplates::failing(lib) } else { LibraryTemplates::new(lib) };
     let options = RenderOptions { title: Some(d.title.clone()), template: d.ns == Namespace::Template };
     let model = render(&d.body, &options, &templates);
     if let Some(e) = templates.take_error() {
@@ -145,8 +161,9 @@ pub(crate) fn prepare(lib: &Library, doc: DocId) -> Result<Option<Prepared>> {
     let tokens = crate::search::index_tokens(&plain).join(" ");
     let home = tree.categories.first().cloned();
     let redirect = model.redirect.as_ref().and_then(library_target);
+    let ex = extract(&model, &tree);
     let json = serde_json::to_vec(&model).expect("모델 JSON");
-    Ok(Some(base(zip(&json)?, zip(plain.as_bytes())?, tokens, home, redirect)))
+    Ok(Some(base(zip(&json)?, zip(plain.as_bytes())?, tokens, home, redirect, ex)))
 }
 
 pub(crate) fn zip(bytes: &[u8]) -> Result<Vec<u8>> {
@@ -154,8 +171,28 @@ pub(crate) fn zip(bytes: &[u8]) -> Result<Vec<u8>> {
 }
 
 /// 한 문서의 색인 행을 모두 새로 쓴다. 문서 번호(rowid)는 처음 색인할 때 정해지고 바뀌지 않는다.
-pub(crate) fn write(db: &Connection, p: &Prepared) -> Result<i64> {
-    let old: Option<i64> = db.prepare_cached("SELECT rowid FROM item WHERE doc = ?1")?.query_row(params![p.doc], |r| r.get(0)).optional()?;
+/// `mark_users`면, 틀 문서일 때 그 틀(옛 제목 · 새 제목)을 쓰는 문서를 낡음으로 넣는다(통째 짓기는 모두 새로 그리므로 끈다).
+pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool) -> Result<i64> {
+    let prev: Option<(i64, Namespace, String)> =
+        db.prepare_cached("SELECT rowid, ns, title FROM item WHERE doc = ?1")?.query_row(params![p.doc], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+    if mark_users {
+        let mut paths = Vec::new();
+        if p.ns == Namespace::Template {
+            paths.push(p.title.clone());
+        }
+        if let Some((_, Namespace::Template, t)) = &prev {
+            if *t != p.title {
+                paths.push(t.clone());
+            }
+        }
+        for t in paths {
+            db.prepare_cached(
+                "INSERT OR IGNORE INTO stale(doc) SELECT i.doc FROM uses u JOIN item i ON i.rowid = u.doc WHERE u.template = ?1 AND i.doc != ?2",
+            )?
+            .execute(params![format!("{}:{t}", Namespace::Template.prefix()), p.doc])?;
+        }
+    }
+    let old = prev.map(|(rowid, _, _)| rowid);
     let (rns, rkey) = match &p.redirect {
         Some((ns, key)) => (Some(*ns), Some(key.as_str())),
         None => (None, None),
@@ -180,8 +217,53 @@ pub(crate) fn write(db: &Connection, p: &Prepared) -> Result<i64> {
     if !p.deleted && !p.tokens.is_empty() {
         db.prepare_cached(&format!("INSERT INTO {}(rowid, t) VALUES (?1, ?2)", fts_of(rowid)))?.execute(params![rowid, p.tokens])?;
     }
+    write_extracted(db, rowid, old.is_some(), &p.ex)?;
     db.prepare_cached("DELETE FROM stale WHERE doc = ?1")?.execute(params![p.doc])?;
     Ok(rowid)
+}
+
+/// 뽑기 표를 이 문서 번호의 새 행으로 바꾼다. 본문 링크는 대상별 문서 수(`target`)도 고친다.
+fn write_extracted(db: &Connection, rowid: i64, existed: bool, ex: &Extracted) -> Result<()> {
+    if existed {
+        let old: Vec<(String, String)> = {
+            let mut st = db.prepare_cached("SELECT ns, key FROM link WHERE src = ?1 AND kind = 0")?;
+            let rows = st.query_map([rowid], |r| Ok((r.get(0)?, r.get(1)?)))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        for (ns, key) in old {
+            db.prepare_cached("UPDATE target SET refs = refs - 1 WHERE ns = ?1 AND key = ?2")?.execute(params![ns, key])?;
+            db.prepare_cached("DELETE FROM target WHERE ns = ?1 AND key = ?2 AND refs <= 0")?.execute(params![ns, key])?;
+        }
+        for (table, col) in PER_DOC {
+            db.prepare_cached(&format!("DELETE FROM {table} WHERE {col} = ?1"))?.execute([rowid])?;
+        }
+    }
+    for (kind, ns, key) in &ex.links {
+        db.prepare_cached("INSERT INTO link(src, kind, ns, key) VALUES (?1, ?2, ?3, ?4)")?.execute(params![rowid, *kind as i64, ns, key])?;
+        if *kind == history_namumark::LinkKind::Body {
+            db.prepare_cached("INSERT INTO target(ns, key, refs) VALUES (?1, ?2, 1) ON CONFLICT(ns, key) DO UPDATE SET refs = refs + 1")?
+                .execute(params![ns, key])?;
+        }
+    }
+    for (i, c) in ex.categories.iter().enumerate() {
+        db.prepare_cached("INSERT INTO member(doc, category, first) VALUES (?1, ?2, ?3)")?.execute(params![rowid, c, i == 0])?;
+    }
+    for (i, f) in ex.footnotes.iter().enumerate() {
+        db.prepare_cached("INSERT INTO note(doc, n, text) VALUES (?1, ?2, ?3)")?.execute(params![rowid, i as i64 + 1, f])?;
+    }
+    for s in &ex.sources {
+        db.prepare_cached("INSERT INTO source(doc, name) VALUES (?1, ?2)")?.execute(params![rowid, s])?;
+    }
+    for e in &ex.entities {
+        db.prepare_cached("INSERT INTO entity(doc, entity) VALUES (?1, ?2)")?.execute(params![rowid, e])?;
+    }
+    for t in &ex.templates {
+        db.prepare_cached("INSERT INTO uses(doc, template) VALUES (?1, ?2)")?.execute(params![rowid, t])?;
+    }
+    if let Some((y0, y1)) = ex.years {
+        db.prepare_cached("INSERT INTO years(doc, y0, y1) VALUES (?1, ?2, ?3)")?.execute(params![rowid, y0, y1])?;
+    }
+    Ok(())
 }
 
 /// 이 문서 번호의 조각 색인 표.
@@ -199,7 +281,7 @@ impl Engine {
     pub fn open(app_dir: &Path) -> Result<Engine> {
         let lib = Library::open(app_dir)?;
         let idx = Index::open(&lib.info().folder, lib.info().library, crate::EXTRA_SCHEMA)?;
-        Ok(Engine { lib, idx, unz: zstd::bulk::Decompressor::new()?, fail_before_index_commit: false })
+        Ok(Engine { lib, idx, unz: zstd::bulk::Decompressor::new()?, fail_before_index_commit: false, fail_template_reads: false })
     }
 
     pub fn status(&self) -> Result<IndexStatus> {
@@ -230,7 +312,7 @@ impl Engine {
             let (mut seen, mut new_w) = (HashSet::new(), w);
             for (seq, doc) in revs {
                 if seen.insert(doc) {
-                    index_one(&self.lib, &tx, doc)?;
+                    index_one(&self.lib, &tx, doc, self.fail_template_reads)?;
                     done += 1;
                 }
                 new_w = seq;
@@ -255,9 +337,9 @@ impl Engine {
             let tx = self.idx.db.transaction()?;
             let mut progressed = false;
             for doc in docs {
-                match prepare(&self.lib, doc) {
+                match prepare(&self.lib, doc, self.fail_template_reads) {
                     Ok(Some(p)) => {
-                        write(&tx, &p)?;
+                        write(&tx, &p, true)?;
                         progressed = true;
                     }
                     Ok(None) => {
@@ -323,7 +405,7 @@ impl Engine {
         let last = self.lib.last_seq()?;
         let tx = self.idx.db.transaction()?;
         for &doc in docs {
-            index_one(&self.lib, &tx, doc)?;
+            index_one(&self.lib, &tx, doc, self.fail_template_reads)?;
         }
         if w == before {
             // 이 저장 앞의 판은 모두 색인에 있었다 — 눈금을 이 저장 뒤로 옮긴다.
@@ -350,10 +432,10 @@ impl Engine {
         let (rowid, redirect, stale) = match row {
             Some((rowid, rev, rns, rkey)) if rev == summary.head => (rowid, rns.zip(rkey), false),
             _ => {
-                let p = prepare(&self.lib, doc)?.ok_or_else(|| Error::NotFound(format!("문서 {doc}")))?;
+                let p = prepare(&self.lib, doc, self.fail_template_reads)?.ok_or_else(|| Error::NotFound(format!("문서 {doc}")))?;
                 let redirect = p.redirect.clone();
                 let tx = self.idx.db.transaction()?;
-                let rowid = write(&tx, &p)?;
+                let rowid = write(&tx, &p, true)?;
                 tx.commit()?;
                 (rowid, redirect, true)
             }
@@ -381,6 +463,12 @@ impl Engine {
         String::from_utf8(bytes).map_err(|_| Error::Corrupt("색인 글이 UTF-8이 아님".into()))
     }
 
+    /// 색인 연결(시험 · 측정이 표를 들여다볼 때).
+    #[doc(hidden)]
+    pub fn debug_index(&self) -> &Connection {
+        &self.idx.db
+    }
+
     /// 색인의 눈금(시험 · 측정).
     #[doc(hidden)]
     pub fn index_seq(&self) -> Result<i64> {
@@ -389,10 +477,10 @@ impl Engine {
 }
 
 /// 한 문서를 색인한다. 읽기 오류면 `stale`에 넣고 넘어간다(색인 쓰기 오류만 올린다).
-fn index_one(lib: &Library, tx: &Connection, doc: DocId) -> Result<()> {
-    match prepare(lib, doc) {
+fn index_one(lib: &Library, tx: &Connection, doc: DocId, fail_templates: bool) -> Result<()> {
+    match prepare(lib, doc, fail_templates) {
         Ok(Some(p)) => {
-            write(tx, &p)?;
+            write(tx, &p, true)?;
         }
         Ok(None) => {}
         Err(_) => mark_stale(tx, doc)?,
