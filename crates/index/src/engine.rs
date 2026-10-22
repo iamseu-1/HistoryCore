@@ -3,6 +3,7 @@
 //! 열 때 통째로 다시 짓지 않는다(설계 5-5).
 use crate::extract::{extract, Extracted, PER_DOC};
 use crate::store::{meta_i64, set_meta, Index};
+use crate::tree::{Children, Tree};
 use history_library::{DocId, DocSummary, Error, Library, Namespace, RevId, Renamed, Result, Saved};
 use history_namumark::{parse, plain_document, render, ObjectRef, Options, RenderOptions, Templates};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -47,6 +48,8 @@ pub struct Engine {
     pub lib: Library,
     pub(crate) idx: Index,
     unz: zstd::bulk::Decompressor<'static>,
+    /// 분류 나무 — 처음 물을 때 지어 두고, 색인이 바뀌면 버린다.
+    tree: Option<Tree>,
     /// 시험용 — 참이면 저장 뒤 색인 트랜잭션을 커밋하기 직전에 끊는다(서재 커밋은 된 채).
     #[doc(hidden)]
     pub fail_before_index_commit: bool,
@@ -173,14 +176,23 @@ pub(crate) fn zip(bytes: &[u8]) -> Result<Vec<u8>> {
 /// 한 문서의 색인 행을 모두 새로 쓴다. 문서 번호(rowid)는 처음 색인할 때 정해지고 바뀌지 않는다.
 /// `mark_users`면, 틀 문서일 때 그 틀(옛 제목 · 새 제목)을 쓰는 문서를 낡음으로 넣는다(통째 짓기는 모두 새로 그리므로 끈다).
 pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool) -> Result<i64> {
-    let prev: Option<(i64, Namespace, String)> =
-        db.prepare_cached("SELECT rowid, ns, title FROM item WHERE doc = ?1")?.query_row(params![p.doc], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).optional()?;
+    let prev: Option<(i64, Namespace, String, Option<String>, bool)> = db
+        .prepare_cached("SELECT rowid, ns, title, home, deleted FROM item WHERE doc = ?1")?
+        .query_row(params![p.doc], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        .optional()?;
+    // 폴더 수: 살아 있는 일반 문서의 집이 바뀐 만큼.
+    if let Some((_, Namespace::Doc, _, home, false)) = &prev {
+        bump_folder(db, home.as_deref().unwrap_or(""), -1)?;
+    }
+    if p.ns == Namespace::Doc && !p.deleted {
+        bump_folder(db, p.home.as_deref().unwrap_or(""), 1)?;
+    }
     if mark_users {
         let mut paths = Vec::new();
         if p.ns == Namespace::Template {
             paths.push(p.title.clone());
         }
-        if let Some((_, Namespace::Template, t)) = &prev {
+        if let Some((_, Namespace::Template, t, _, _)) = &prev {
             if *t != p.title {
                 paths.push(t.clone());
             }
@@ -192,7 +204,7 @@ pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool) -> Result<i
             .execute(params![format!("{}:{t}", Namespace::Template.prefix()), p.doc])?;
         }
     }
-    let old = prev.map(|(rowid, _, _)| rowid);
+    let old = prev.map(|(rowid, ..)| rowid);
     let (rns, rkey) = match &p.redirect {
         Some((ns, key)) => (Some(*ns), Some(key.as_str())),
         None => (None, None),
@@ -266,6 +278,13 @@ fn write_extracted(db: &Connection, rowid: i64, existed: bool, ex: &Extracted) -
     Ok(())
 }
 
+fn bump_folder(db: &Connection, name: &str, by: i64) -> Result<()> {
+    db.prepare_cached("INSERT INTO folder(name, direct) VALUES (?1, ?2) ON CONFLICT(name) DO UPDATE SET direct = direct + excluded.direct")?
+        .execute(params![name, by])?;
+    db.prepare_cached("DELETE FROM folder WHERE name = ?1 AND direct <= 0")?.execute([name])?;
+    Ok(())
+}
+
 /// 이 문서 번호의 조각 색인 표.
 pub(crate) fn fts_of(rowid: i64) -> &'static str {
     crate::search::SHARD_TABLES[crate::search::shard_of(rowid)]
@@ -281,7 +300,7 @@ impl Engine {
     pub fn open(app_dir: &Path) -> Result<Engine> {
         let lib = Library::open(app_dir)?;
         let idx = Index::open(&lib.info().folder, lib.info().library, crate::EXTRA_SCHEMA)?;
-        Ok(Engine { lib, idx, unz: zstd::bulk::Decompressor::new()?, fail_before_index_commit: false, fail_template_reads: false })
+        Ok(Engine { lib, idx, unz: zstd::bulk::Decompressor::new()?, tree: None, fail_before_index_commit: false, fail_template_reads: false })
     }
 
     pub fn status(&self) -> Result<IndexStatus> {
@@ -300,6 +319,7 @@ impl Engine {
 
     /// 낡은 문서를 `max` 동안 고친다 — 먼저 판 눈금 뒤의 판, 다음 `stale` 표.
     pub fn step(&mut self, max: Duration) -> Result<StepReport> {
+        self.tree = None;
         let start = Instant::now();
         let mut done = 0u64;
         'revs: loop {
@@ -397,6 +417,7 @@ impl Engine {
 
     /// 서재 커밋 뒤 그 문서들을 색인한다. 실패해도 서재 저장은 그대로다 — 문서는 낡음으로 남고 `step`이 다시 한다.
     fn after_write(&mut self, before: i64, docs: &[DocId]) {
+        self.tree = None;
         let _ = self.index_now(before, docs);
     }
 
@@ -437,6 +458,7 @@ impl Engine {
                 let tx = self.idx.db.transaction()?;
                 let rowid = write(&tx, &p, true)?;
                 tx.commit()?;
+                self.tree = None;
                 (rowid, redirect, true)
             }
         };
@@ -461,6 +483,22 @@ impl Engine {
         let cap = zstd::zstd_safe::get_frame_content_size(z).ok().flatten().unwrap_or(64 << 20) as usize;
         let bytes = self.unz.decompress(z, cap.max(1))?;
         String::from_utf8(bytes).map_err(|_| Error::Corrupt("색인 글이 UTF-8이 아님".into()))
+    }
+
+    /// 분류 폴더 하나 — `None`이면 맨 위(「분류 안 됨」 수 포함), 빈 이름이면 「분류 안 됨」 문서.
+    pub fn children(&mut self, category: Option<&str>, limit: usize, after: Option<&str>) -> Result<Children> {
+        if self.tree.is_none() {
+            self.tree = Some(Tree::load(&self.idx.db)?);
+        }
+        self.tree.as_ref().expect("나무").children(&self.idx.db, category, limit, after)
+    }
+
+    /// 분류 나무(대문 · 통계가 갈래를 셀 때).
+    pub(crate) fn tree(&mut self) -> Result<&Tree> {
+        if self.tree.is_none() {
+            self.tree = Some(Tree::load(&self.idx.db)?);
+        }
+        Ok(self.tree.as_ref().expect("나무"))
     }
 
     /// 색인 연결(시험 · 측정이 표를 들여다볼 때).

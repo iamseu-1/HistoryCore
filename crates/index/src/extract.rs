@@ -27,6 +27,10 @@ CREATE TABLE uses(doc INTEGER NOT NULL, template TEXT NOT NULL);
 CREATE INDEX uses_doc ON uses(doc);
 CREATE INDEX uses_template ON uses(template);
 CREATE TABLE years(doc INTEGER PRIMARY KEY, y0 INTEGER NOT NULL, y1 INTEGER NOT NULL);
+-- 분류마다 바로 든 살아 있는 일반 문서 수(빈 이름 = 분류 안 됨). 나무는 이것과 분류 문서의 부모만 읽는다.
+CREATE TABLE folder(name TEXT PRIMARY KEY, direct INTEGER NOT NULL) WITHOUT ROWID;
+CREATE INDEX item_home ON item(home, title) WHERE ns = 0 AND deleted = 0;
+CREATE INDEX item_categories ON item(title, created) WHERE ns = 1 AND deleted = 0;
 ";
 
 /// 이 문서 번호의 뽑기 행을 담은 표(다시 색인할 때 모두 지운다).
