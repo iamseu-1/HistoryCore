@@ -269,6 +269,38 @@ impl Library {
         }
     }
 
+    /// 마지막 판 번호(`rev.seq`, 늘기만 한다) — 색인의 눈금과 견준다.
+    pub fn last_seq(&self) -> Result<i64> {
+        Ok(self.db.query_row("SELECT COALESCE(MAX(seq), 0) FROM rev", [], |r| r.get(0))?)
+    }
+
+    /// 판 번호 `after` 뒤의 판(번호 차례), 많아야 `limit` — (번호, 문서).
+    pub fn revisions_after(&self, after: i64, limit: usize) -> Result<Vec<(i64, DocId)>> {
+        let mut st = self.db.prepare_cached("SELECT seq, doc FROM rev WHERE seq > ?1 ORDER BY seq LIMIT ?2")?;
+        let rows = st.query_map(params![after, limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// 판 번호 `after` 뒤에 판이 생긴 문서 수.
+    pub fn docs_changed_after(&self, after: i64) -> Result<u64> {
+        let n: i64 = self.db.prepare_cached("SELECT count(DISTINCT doc) FROM rev WHERE seq > ?1")?.query_row([after], |r| r.get(0))?;
+        Ok(n as u64)
+    }
+
+    /// 이 문서에 판 번호 `after` 뒤의 판이 있는가.
+    pub fn changed_after(&self, doc: DocId, after: i64) -> Result<bool> {
+        Ok(self.db.prepare_cached("SELECT 1 FROM rev WHERE doc = ?1 AND seq > ?2 LIMIT 1")?.query_row(params![doc, after], |_| Ok(())).optional()?.is_some())
+    }
+
+    /// 본문을 풀지 않는 요약과 지움 표시. 없으면 None.
+    pub fn summary(&self, doc: DocId) -> Result<Option<(DocSummary, bool)>> {
+        match load_head(&self.db, doc) {
+            Ok(h) => Ok(Some((DocSummary { id: doc, ns: h.ns, title: h.title, head: h.head, created: h.created, updated: h.updated }, h.deleted))),
+            Err(Error::NotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn counts(&self) -> Result<Counts> {
         let mut counts = Counts::default();
         let mut st = self.db.prepare_cached(COUNTS_SQL)?;

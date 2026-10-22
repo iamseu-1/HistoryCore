@@ -7,6 +7,20 @@ use unicode_normalization::UnicodeNormalization;
 /// 문서 번호(`rowid`)마다 조각만 든다. 지우기는 `DELETE FROM fts WHERE rowid = ?`.
 pub const FTS_SCHEMA: &str = "CREATE VIRTUAL TABLE fts USING fts5(t, content='', contentless_delete=1, detail=none, tokenize='ascii');";
 
+/// 조각 색인은 넷으로 나눈다(문서 번호 % 4) — 통째 짓기가 넷을 나란히 짓고, 찾을 때는 넷을 번호 차례로 합친다.
+/// FTS5는 쓰는 쪽 하나로 초당 2–3천 편이라 100만 편을 한 표에 지으면 8분이 넘는다(bench/README.md).
+pub const SHARDS: usize = 4;
+pub const SHARD_TABLES: [&str; SHARDS] = ["fts0", "fts1", "fts2", "fts3"];
+
+pub fn shard_of(rowid: i64) -> usize {
+    rowid.rem_euclid(SHARDS as i64) as usize
+}
+
+/// `FTS_SCHEMA`와 같은 선택으로 이름만 바꾼 표.
+pub fn shard_schema(table: &str) -> String {
+    FTS_SCHEMA.replacen("TABLE fts ", &format!("TABLE {table} "), 1)
+}
+
 /// 넣을 때와 찾을 때 같은 꼴로 — NFC(결합 자모로 친 한글을 음절로) + 소문자.
 pub fn normalize(text: &str) -> String {
     text.nfc().flat_map(char::to_lowercase).collect()
