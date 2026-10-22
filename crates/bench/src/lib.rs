@@ -3,6 +3,7 @@ pub mod library;
 pub mod naive;
 pub mod report;
 pub mod run;
+pub mod search_spike;
 pub mod stats;
 pub mod workload;
 

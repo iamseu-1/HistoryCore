@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/library", "crates/ffi", "crates/corpus", "crates/bench", "crates/namumark"]
+members = ["crates/library", "crates/ffi", "crates/corpus", "crates/bench", "crates/namumark", "crates/index"]
 
 [workspace.package]
 version = "0.0.1"

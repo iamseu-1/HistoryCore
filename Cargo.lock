@@ -171,9 +171,12 @@ name = "history_bench"
 version = "0.0.1"
 dependencies = [
  "history_corpus",
+ "history_index",
+ "history_namumark",
  "rusqlite",
  "serde",
  "serde_json",
+ "zstd",
 ]
 
 [[package]]
@@ -190,6 +193,20 @@ name = "history_corpus"
 version = "0.0.1"
 dependencies = [
  "sha2",
+]
+
+[[package]]
+name = "history_index"
+version = "0.0.1"
+dependencies = [
+ "history_corpus",
+ "history_library",
+ "history_namumark",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+ "zstd",
 ]
 
 [[package]]

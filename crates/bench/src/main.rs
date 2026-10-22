@@ -1,5 +1,6 @@
 //! hc-bench — 더미 서재를 들이고 일감을 재어 예산표(설계 9-2)와 견준다.
 //!   hc-bench run --docs 100000 --dir <작업 폴더> [--seed 20261021] [--device pc] [--out bench/results] [--quick]
+//!   hc-bench search --docs 1000000 --dir <작업 폴더> [--seed 20261021] [--workers <수>] — 검색 조각 색인만 지어 잰다(P2-3)
 use history_bench::{naive::NaiveSqlite, run, Result, RunPlan};
 use history_corpus::{Corpus, CorpusSpec, TextPool};
 use std::path::PathBuf;
@@ -19,6 +20,9 @@ fn arg(args: &[String], name: &str) -> Option<String> {
 
 fn real_main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("search") {
+        return search(&args);
+    }
     if args.first().map(String::as_str) != Some("run") {
         return Err(USAGE.into());
     }
@@ -40,5 +44,21 @@ fn real_main() -> Result<()> {
     std::fs::write(out.join(format!("{stem}.json")), report.to_json())?;
     std::fs::write(out.join(format!("{stem}.md")), report.to_markdown())?;
     println!("{}", report.to_markdown());
+    Ok(())
+}
+
+fn search(args: &[String]) -> Result<()> {
+    let docs: u32 = arg(args, "--docs").ok_or(USAGE)?.parse()?;
+    let dir = PathBuf::from(arg(args, "--dir").ok_or(USAGE)?);
+    let seed: u64 = arg(args, "--seed").map(|s| s.parse()).transpose()?.unwrap_or(20_261_021);
+    let workers = match arg(args, "--workers") {
+        Some(w) => w.parse()?,
+        None => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).max(1),
+    };
+    let pool = TextPool::embedded();
+    let corpus = Corpus::new(CorpusSpec { docs, seed }, &pool);
+    eprintln!("검색 조각 색인을 짓는다 — {docs}편, 일꾼 {workers}");
+    let r = history_bench::search_spike::spike(&corpus, &dir, workers, seed)?;
+    println!("{}", r.to_markdown());
     Ok(())
 }
