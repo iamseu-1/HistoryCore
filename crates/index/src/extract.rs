@@ -10,7 +10,9 @@ CREATE TABLE link(src INTEGER NOT NULL, kind INTEGER NOT NULL, ns TEXT NOT NULL,
 CREATE INDEX link_src ON link(src);
 CREATE INDEX link_target ON link(ns, key);
 -- 본문 링크가 가리키는 대상별 문서 수(만들 문서 · 많이 불리는 문서).
-CREATE TABLE target(ns TEXT NOT NULL, key TEXT NOT NULL, refs INTEGER NOT NULL, PRIMARY KEY(ns, key)) WITHOUT ROWID;
+-- present: 그 제목의 살아 있는 문서가 색인에 있다(만들 문서 = present 0).
+CREATE TABLE target(ns TEXT NOT NULL, key TEXT NOT NULL, refs INTEGER NOT NULL, present INTEGER NOT NULL, PRIMARY KEY(ns, key)) WITHOUT ROWID;
+CREATE INDEX target_wanted ON target(present, refs);
 CREATE INDEX target_refs ON target(refs);
 CREATE TABLE member(doc INTEGER NOT NULL, category TEXT NOT NULL, first INTEGER NOT NULL);
 CREATE INDEX member_doc ON member(doc);
@@ -31,6 +33,7 @@ CREATE TABLE years(doc INTEGER PRIMARY KEY, y0 INTEGER NOT NULL, y1 INTEGER NOT 
 CREATE TABLE folder(name TEXT PRIMARY KEY, direct INTEGER NOT NULL) WITHOUT ROWID;
 CREATE INDEX item_home ON item(home, title) WHERE ns = 0 AND deleted = 0;
 CREATE INDEX item_categories ON item(title, created) WHERE ns = 1 AND deleted = 0;
+CREATE INDEX item_title ON item(ns, title) WHERE deleted = 0;
 ";
 
 /// 이 문서 번호의 뽑기 행을 담은 표(다시 색인할 때 모두 지운다).
@@ -56,7 +59,11 @@ pub(crate) fn extract(model: &Model, doc: &Document) -> Extracted {
     let links = out_links(doc)
         .into_iter()
         .filter(|l| Namespace::ALL.iter().any(|n| n.prefix() == l.target.ns))
-        .map(|l| (l.kind, l.target.ns, l.target.key))
+        .map(|l| {
+            // 서재 제목과 같은 꼴로(공백 · 보이지 않는 글자 · NFC) — 링크 대상과 문서 제목을 그대로 견준다.
+            let key = history_library::normalize_title(&l.target.key).unwrap_or(l.target.key);
+            (l.kind, l.target.ns, key)
+        })
         .collect();
     let footnotes: Vec<String> = doc.footnotes.iter().map(|f| plain_inline(&f.children)).collect();
     let mut sources = Vec::new();

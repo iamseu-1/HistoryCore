@@ -3,7 +3,8 @@
 //! 열 때 통째로 다시 짓지 않는다(설계 5-5).
 use crate::extract::{extract, Extracted, PER_DOC};
 use crate::store::{meta_i64, set_meta, Index};
-use crate::tree::{Children, Tree};
+use crate::search::{fts_match, parse_query, snippet, verify, SHARDS, SHARD_TABLES};
+use crate::tree::{summary_row, Children, Tree};
 use history_library::{DocId, DocSummary, Error, Library, Namespace, RevId, Renamed, Result, Saved};
 use history_namumark::{parse, plain_document, render, ObjectRef, Options, RenderOptions, Templates};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -30,6 +31,23 @@ pub struct IndexStatus {
 pub struct StepReport {
     pub done: u64,
     pub stale: u64,
+}
+
+/// 본문 찾기 한 건.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hit {
+    pub doc: DocSummary,
+    /// 첫 맞은 곳 앞뒤 글자(표식 없음).
+    pub snippet: String,
+}
+
+/// 없는 문서를 가리킨 링크(만들 문서).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Wanted {
+    pub ns: Namespace,
+    pub title: String,
+    /// 가리킨 문서 수.
+    pub refs: u64,
 }
 
 /// `doc.open`의 답.
@@ -204,7 +222,7 @@ pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool) -> Result<i
             .execute(params![format!("{}:{t}", Namespace::Template.prefix()), p.doc])?;
         }
     }
-    let old = prev.map(|(rowid, ..)| rowid);
+    let old = prev.as_ref().map(|(rowid, ..)| *rowid);
     let (rns, rkey) = match &p.redirect {
         Some((ns, key)) => (Some(*ns), Some(key.as_str())),
         None => (None, None),
@@ -230,6 +248,18 @@ pub(crate) fn write(db: &Connection, p: &Prepared, mark_users: bool) -> Result<i
         db.prepare_cached(&format!("INSERT INTO {}(rowid, t) VALUES (?1, ?2)", fts_of(rowid)))?.execute(params![rowid, p.tokens])?;
     }
     write_extracted(db, rowid, old.is_some(), &p.ex)?;
+    // 이 제목을 가리키던 링크가 만들 문서인지 다시 정한다(새 제목은 있음, 떠난 옛 제목은 다른 문서가 남았는지).
+    if !p.deleted {
+        db.prepare_cached("UPDATE target SET present = 1 WHERE ns = ?1 AND key = ?2")?.execute(params![p.ns.prefix(), p.title])?;
+    }
+    if let Some((_, ns, title, _, was_deleted)) = &prev {
+        if !*was_deleted && (p.deleted || *ns != p.ns || *title != p.title) {
+            db.prepare_cached(
+                "UPDATE target SET present = EXISTS(SELECT 1 FROM item WHERE ns = ?3 AND title = ?2 AND deleted = 0) WHERE ns = ?1 AND key = ?2",
+            )?
+            .execute(params![ns.prefix(), title, ns])?;
+        }
+    }
     db.prepare_cached("DELETE FROM stale WHERE doc = ?1")?.execute(params![p.doc])?;
     Ok(rowid)
 }
@@ -253,8 +283,16 @@ fn write_extracted(db: &Connection, rowid: i64, existed: bool, ex: &Extracted) -
     for (kind, ns, key) in &ex.links {
         db.prepare_cached("INSERT INTO link(src, kind, ns, key) VALUES (?1, ?2, ?3, ?4)")?.execute(params![rowid, *kind as i64, ns, key])?;
         if *kind == history_namumark::LinkKind::Body {
-            db.prepare_cached("INSERT INTO target(ns, key, refs) VALUES (?1, ?2, 1) ON CONFLICT(ns, key) DO UPDATE SET refs = refs + 1")?
-                .execute(params![ns, key])?;
+            let present = match Namespace::ALL.into_iter().find(|n| n.prefix() == ns) {
+                Some(code) => db
+                    .prepare_cached("SELECT EXISTS(SELECT 1 FROM item WHERE ns = ?1 AND title = ?2 AND deleted = 0)")?
+                    .query_row(params![code, key], |r| r.get::<_, bool>(0))?,
+                None => false,
+            };
+            db.prepare_cached(
+                "INSERT INTO target(ns, key, refs, present) VALUES (?1, ?2, 1, ?3) ON CONFLICT(ns, key) DO UPDATE SET refs = refs + 1",
+            )?
+            .execute(params![ns, key, present])?;
         }
     }
     for (i, c) in ex.categories.iter().enumerate() {
@@ -480,9 +518,97 @@ impl Engine {
     }
 
     pub(crate) fn unzip(&mut self, z: &[u8]) -> Result<String> {
-        let cap = zstd::zstd_safe::get_frame_content_size(z).ok().flatten().unwrap_or(64 << 20) as usize;
-        let bytes = self.unz.decompress(z, cap.max(1))?;
-        String::from_utf8(bytes).map_err(|_| Error::Corrupt("색인 글이 UTF-8이 아님".into()))
+        unzip_with(&mut self.unz, z)
+    }
+
+    /// 있는 문서 ID — 같은 차례, 없으면 None. 제목은 정규화하고, 같은 제목이 둘이면 먼저 만든 것.
+    pub fn titles_exist(&self, titles: &[(Namespace, String)]) -> Result<Vec<Option<DocId>>> {
+        titles.iter().map(|(ns, t)| Ok(self.lib.by_title(*ns, t)?.into_iter().next().map(|d| d.id))).collect()
+    }
+
+    pub fn search_titles(&self, ns: Namespace, prefix: &str, limit: usize) -> Result<Vec<DocSummary>> {
+        self.lib.titles_with_prefix(ns, prefix, limit)
+    }
+
+    /// 본문 찾기 — 조각 색인 넷을 문서 번호 차례로 합쳐 후보를 받고, 지운 · 낡은 문서는 건너뛰고, 확인을 지난 것만 `limit`까지.
+    pub fn search_body(&mut self, query: &str, limit: usize) -> Result<Vec<Hit>> {
+        let Some(q) = parse_query(query) else {
+            return Ok(Vec::new());
+        };
+        let m = fts_match(&q);
+        let db = &self.idx.db;
+        let mut stmts = Vec::with_capacity(SHARDS);
+        for t in SHARD_TABLES {
+            stmts.push(db.prepare_cached(&format!("SELECT rowid FROM {t} WHERE {t} MATCH ?1"))?);
+        }
+        let mut rows = Vec::with_capacity(SHARDS);
+        for s in stmts.iter_mut() {
+            rows.push(s.query([&m])?);
+        }
+        let mut heads = Vec::with_capacity(SHARDS);
+        for r in rows.iter_mut() {
+            heads.push(next_rowid(r)?);
+        }
+        let mut hits = Vec::new();
+        while hits.len() < limit {
+            let Some((k, rowid)) = heads.iter().enumerate().filter_map(|(k, h)| h.map(|r| (k, r))).min_by_key(|&(_, r)| r) else {
+                break;
+            };
+            heads[k] = next_rowid(&mut rows[k])?;
+            let row: Option<(DocSummary, bool, Vec<u8>)> = db
+                .prepare_cached(
+                    "SELECT i.doc, i.ns, i.title, i.rev, i.created, i.updated, i.deleted, p.z FROM item i JOIN plain p ON p.rowid = i.rowid WHERE i.rowid = ?1",
+                )?
+                .query_row([rowid], |r| Ok((summary_row(r)?, r.get(6)?, r.get(7)?)))
+                .optional()?;
+            let Some((doc, deleted, z)) = row else { continue };
+            if deleted || self.lib.summary(doc.id)?.map(|(s, _)| s.head) != Some(doc.head) {
+                continue; // 지웠거나, 색인한 글이 머리 판보다 낡았다
+            }
+            let plain = unzip_with(&mut self.unz, &z)?;
+            if !verify(&plain, &q) {
+                continue;
+            }
+            hits.push(Hit { snippet: snippet(&plain, &q, 40), doc });
+        }
+        Ok(hits)
+    }
+
+    /// 이 문서 제목으로 링크(본문 · 넘겨주기)한 살아 있는 문서, 제목 차례.
+    pub fn links_back(&self, doc: DocId, limit: usize) -> Result<Vec<DocSummary>> {
+        let Some((me, _)) = self.lib.summary(doc)? else {
+            return Ok(Vec::new());
+        };
+        let mut st = self.idx.db.prepare_cached(
+            "SELECT DISTINCT i.doc, i.ns, i.title, i.rev, i.created, i.updated FROM link l JOIN item i ON i.rowid = l.src
+             WHERE l.ns = ?1 AND l.key = ?2 AND l.kind IN (0, 2) AND i.deleted = 0 AND i.doc != ?3 ORDER BY i.title LIMIT ?4",
+        )?;
+        let rows = st.query_map(params![me.ns.prefix(), me.title, doc, limit as i64], summary_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// 만들 문서 — 없는 문서를 가리킨 본문 링크, 가리킨 문서 수 많은 차례.
+    pub fn links_wanted(&self, limit: usize) -> Result<Vec<Wanted>> {
+        let mut st = self.idx.db.prepare_cached("SELECT ns, key, refs FROM target WHERE present = 0 ORDER BY refs DESC, ns, key LIMIT ?1")?;
+        let rows = st.query_map([limit as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (ns, title, refs) = row?;
+            if let Some(ns) = Namespace::ALL.into_iter().find(|n| n.prefix() == ns) {
+                out.push(Wanted { ns, title, refs: refs as u64 });
+            }
+        }
+        Ok(out)
+    }
+
+    /// 이 연표 항목을 잇는 문서(연표 링크 · 연표 띠), 제목 차례.
+    pub fn timeline_docs(&self, entity: &str) -> Result<Vec<DocSummary>> {
+        let mut st = self.idx.db.prepare_cached(
+            "SELECT DISTINCT i.doc, i.ns, i.title, i.rev, i.created, i.updated FROM entity e JOIN item i ON i.rowid = e.doc
+             WHERE e.entity = ?1 AND i.deleted = 0 ORDER BY i.title",
+        )?;
+        let rows = st.query_map([entity], summary_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// 분류 폴더 하나 — `None`이면 맨 위(「분류 안 됨」 수 포함), 빈 이름이면 「분류 안 됨」 문서.
@@ -512,6 +638,19 @@ impl Engine {
     pub fn index_seq(&self) -> Result<i64> {
         meta_i64(&self.idx.db, "seq")
     }
+}
+
+fn next_rowid(rows: &mut rusqlite::Rows<'_>) -> Result<Option<i64>> {
+    Ok(match rows.next()? {
+        Some(r) => Some(r.get(0)?),
+        None => None,
+    })
+}
+
+pub(crate) fn unzip_with(unz: &mut zstd::bulk::Decompressor<'static>, z: &[u8]) -> Result<String> {
+    let cap = zstd::zstd_safe::get_frame_content_size(z).ok().flatten().unwrap_or(64 << 20) as usize;
+    let bytes = unz.decompress(z, cap.max(1))?;
+    String::from_utf8(bytes).map_err(|_| Error::Corrupt("색인 글이 UTF-8이 아님".into()))
 }
 
 /// 한 문서를 색인한다. 읽기 오류면 `stale`에 넣고 넘어간다(색인 쓰기 오류만 올린다).

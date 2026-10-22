@@ -6,7 +6,7 @@ pub mod search;
 pub mod store;
 pub mod tree;
 
-pub use engine::{Engine, IndexStatus, LibraryTemplates, Opened, StepReport};
+pub use engine::{Engine, Hit, IndexStatus, LibraryTemplates, Opened, StepReport, Wanted};
 pub use tree::{Children, Folder};
 
 /// 색인 스키마 중 뽑기 표.

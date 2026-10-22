@@ -269,6 +269,23 @@ impl Library {
         }
     }
 
+    /// 제목이 `prefix`로 시작하는 살아 있는 문서(제목 차례), 많아야 `limit`. 앞붙이는 NFC로 맞추고 앞 공백만 뗀다.
+    pub fn titles_with_prefix(&self, ns: Namespace, prefix: &str, limit: usize) -> Result<Vec<DocSummary>> {
+        use unicode_normalization::UnicodeNormalization;
+        let prefix: String = prefix.trim_start().nfc().collect();
+        if prefix.is_empty() {
+            return Ok(Vec::new());
+        }
+        let upper = format!("{prefix}\u{10FFFF}");
+        let mut st = self.db.prepare_cached(
+            "SELECT id, ns, title, head, created, updated FROM doc WHERE ns = ?1 AND title >= ?2 AND title < ?3 AND deleted = 0 ORDER BY title, created LIMIT ?4",
+        )?;
+        let rows = st.query_map(params![ns, prefix, upper, limit as i64], |r| {
+            Ok(DocSummary { id: r.get(0)?, ns: r.get(1)?, title: r.get(2)?, head: r.get(3)?, created: r.get(4)?, updated: r.get(5)? })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// 마지막 판 번호(`rev.seq`, 늘기만 한다) — 색인의 눈금과 견준다.
     pub fn last_seq(&self) -> Result<i64> {
         Ok(self.db.query_row("SELECT COALESCE(MAX(seq), 0) FROM rev", [], |r| r.get(0))?)
