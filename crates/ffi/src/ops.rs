@@ -1,6 +1,7 @@
-//! 서재 일의 다리 — `library.*` · `doc.*` · `rev.*`(spec/engine-api.md). 열린 서재는 손잡이 표에 든다.
-use history_library::{Doc, DocId, DocSummary, Error, Hlc, Library, Namespace, RevId, RevInfo, Saved};
-use history_namumark::{render, NoTemplates, ObjectRef, RenderOptions, Templates};
+//! 서재 일의 다리 — `library.*` · `doc.*` · `rev.*` · 색인 op(spec/engine-api.md). 열린 서재(엔진 = 서재 + 색인)는 손잡이 표에 든다.
+use history_index::{Children, Engine, Hit, HomeOptions, LibraryTemplates, Opened, Wanted};
+use history_library::{Counts, Doc, DocId, DocSummary, Error, Hlc, Library, Namespace, RevId, RevInfo, Saved};
+use history_namumark::{render, NoTemplates, RenderOptions};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -8,7 +9,13 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 
 struct Open {
     next: u64,
-    libraries: HashMap<u64, Library>,
+    libraries: HashMap<u64, Engine>,
+}
+
+/// 답 — 보통은 JSON 값, `doc.open`은 그리기 모델 글을 풀지 않고 끼운다.
+pub enum Reply {
+    Json(Value),
+    WithModel(Value, String),
 }
 
 fn table() -> MutexGuard<'static, Open> {
@@ -22,17 +29,21 @@ fn table() -> MutexGuard<'static, Open> {
 type Answer = Result<Value, Value>;
 
 const LIBRARY_OPS: [&str; 9] = ["library.counts", "doc.create", "doc.save", "doc.rename", "doc.delete", "doc.get", "doc.by_title", "doc.history", "rev.get"];
+const INDEX_OPS: [&str; 11] =
+    ["titles.exist", "search.titles", "search.body", "tree.children", "links.back", "links.wanted", "home.aggregates", "stats.library", "timeline.docs", "index.status", "index.step"];
 
 /// 서재 op면 답을, 아니면 None(모르는 op).
-pub fn handle_op(op: &str, req: &Value) -> Option<Value> {
+pub fn handle_op(op: &str, req: &Value) -> Option<Reply> {
     let answer = match op {
         "library.open" => open(req),
         "library.close" => close(req),
         "namumark.parse" => parse_op(req),
-        op if LIBRARY_OPS.contains(&op) => with_library(req, |lib| run(op, lib, req)),
+        "doc.open" => return Some(with_engine(req, |e| open_doc(e, req)).map_or_else(Reply::Json, |(v, model)| Reply::WithModel(v, model))),
+        op if LIBRARY_OPS.contains(&op) => with_engine(req, |e| run(op, e, req)),
+        op if INDEX_OPS.contains(&op) => with_engine(req, |e| run_index(op, e, req)),
         _ => return None,
     };
-    Some(answer.unwrap_or_else(|e| e))
+    Some(Reply::Json(answer.unwrap_or_else(|e| e)))
 }
 
 fn bad(message: impl Into<String>) -> Value {
@@ -89,14 +100,14 @@ fn open(req: &Value) -> Answer {
     let dir = PathBuf::from(text(req, "dir")?);
     let folder = dir.join(history_library::FOLDER);
     let mut t = table();
-    if let Some((&h, lib)) = t.libraries.iter().find(|(_, lib)| same_folder(&lib.info().folder, &folder)) {
-        return Ok(opened(h, lib));
+    if let Some((&h, e)) = t.libraries.iter().find(|(_, e)| same_folder(&e.lib.info().folder, &folder)) {
+        return Ok(opened(h, &e.lib));
     }
-    let lib = Library::open(&dir).map_err(fail)?;
+    let e = Engine::open(&dir).map_err(fail)?;
     let h = t.next;
     t.next += 1;
-    let answer = opened(h, &lib);
-    t.libraries.insert(h, lib);
+    let answer = opened(h, &e.lib);
+    t.libraries.insert(h, e);
     Ok(answer)
 }
 
@@ -105,11 +116,11 @@ fn close(req: &Value) -> Answer {
     table().libraries.remove(&h).map(|_| json!({"ok": true})).ok_or_else(|| bad_handle(h))
 }
 
-fn with_library(req: &Value, f: impl FnOnce(&mut Library) -> Answer) -> Answer {
+fn with_engine<T>(req: &Value, f: impl FnOnce(&mut Engine) -> Result<T, Value>) -> Result<T, Value> {
     let h = handle_of(req)?;
     let mut t = table();
-    let lib = t.libraries.get_mut(&h).ok_or_else(|| bad_handle(h))?;
-    f(lib)
+    let e = t.libraries.get_mut(&h).ok_or_else(|| bad_handle(h))?;
+    f(e)
 }
 
 fn saved(s: &Saved) -> Value {
@@ -137,53 +148,59 @@ fn not_found(what: &str) -> Value {
     json!({"ok": false, "error": format!("없음: {what}"), "code": "not_found"})
 }
 
-fn run(op: &str, lib: &mut Library, req: &Value) -> Answer {
+fn counts_json(c: &Counts) -> Value {
+    let mut v = json!({"deleted": c.deleted, "total": c.total()});
+    for ns in Namespace::ALL {
+        v[ns.code()] = json!(c.of(ns));
+    }
+    v
+}
+
+/// 쓰는 일은 엔진을 거친다(저장 뒤 그 문서를 색인), 읽는 일은 서재에서 바로.
+fn run(op: &str, e: &mut Engine, req: &Value) -> Answer {
     match op {
         "library.counts" => {
-            let c = lib.counts().map_err(fail)?;
-            let mut v = json!({"ok": true, "deleted": c.deleted, "total": c.total()});
-            for ns in Namespace::ALL {
-                v[ns.code()] = json!(c.of(ns));
-            }
+            let mut v = counts_json(&e.lib.counts().map_err(fail)?);
+            v["ok"] = json!(true);
             Ok(v)
         }
         "doc.create" => {
-            let s = lib.create(namespace(req)?, text(req, "title")?, text(req, "body")?, optional_text(req, "message")).map_err(fail)?;
+            let s = e.create(namespace(req)?, text(req, "title")?, text(req, "body")?, optional_text(req, "message")).map_err(fail)?;
             Ok(saved(&s))
         }
         "doc.save" => {
-            let s = lib.save(doc_id(req, "doc")?, rev_id(req, "base")?, text(req, "body")?, optional_text(req, "message")).map_err(fail)?;
+            let s = e.save(doc_id(req, "doc")?, rev_id(req, "base")?, text(req, "body")?, optional_text(req, "message")).map_err(fail)?;
             Ok(saved(&s))
         }
         "doc.delete" => {
-            let s = lib.delete(doc_id(req, "doc")?, rev_id(req, "base")?, optional_text(req, "message")).map_err(fail)?;
+            let s = e.delete(doc_id(req, "doc")?, rev_id(req, "base")?, optional_text(req, "message")).map_err(fail)?;
             Ok(saved(&s))
         }
         "doc.rename" => {
             let keep = req.get("keep_redirect").and_then(Value::as_bool).unwrap_or(true);
-            let r = lib.rename(doc_id(req, "doc")?, rev_id(req, "base")?, text(req, "title")?, keep, optional_text(req, "message")).map_err(fail)?;
+            let r = e.rename(doc_id(req, "doc")?, rev_id(req, "base")?, text(req, "title")?, keep, optional_text(req, "message")).map_err(fail)?;
             Ok(json!({"ok": true, "rev": r.rev.to_string(), "hlc": r.hlc.0, "redirect": r.redirect.map(|d| d.to_string())}))
         }
         "doc.get" => {
             let id = doc_id(req, "doc")?;
-            match lib.get(id).map_err(fail)? {
+            match e.lib.get(id).map_err(fail)? {
                 Some(d) => Ok(json!({"ok": true, "doc": doc_json(&d)})),
                 None => Err(not_found(&format!("문서 {id}"))),
             }
         }
         "doc.by_title" => {
-            let docs = lib.by_title(namespace(req)?, text(req, "title")?).map_err(fail)?;
+            let docs = e.lib.by_title(namespace(req)?, text(req, "title")?).map_err(fail)?;
             Ok(json!({"ok": true, "docs": docs.iter().map(summary_json).collect::<Vec<_>>()}))
         }
         "doc.history" => {
             let limit = req.get("limit").and_then(Value::as_u64).unwrap_or(50).min(1000) as usize;
             let before = req.get("before").and_then(Value::as_u64).map(Hlc);
-            let revs = lib.history(doc_id(req, "doc")?, limit, before).map_err(fail)?;
+            let revs = e.lib.history(doc_id(req, "doc")?, limit, before).map_err(fail)?;
             Ok(json!({"ok": true, "revisions": revs.iter().map(rev_json).collect::<Vec<_>>()}))
         }
         "rev.get" => {
             let id = rev_id(req, "rev")?;
-            match lib.revision(id).map_err(fail)? {
+            match e.lib.revision(id).map_err(fail)? {
                 Some(r) => {
                     let mut v = rev_json(&r.info);
                     v["body"] = json!(r.body);
@@ -196,18 +213,8 @@ fn run(op: &str, lib: &mut Library, req: &Value) -> Answer {
     }
 }
 
-/// 열린 서재에서 틀 원문을 읽는다 — 서재에 담을 수 있는 이름공간(문서 · 분류 · 틀 · 파일 · 대문)만. 같은 제목이 둘이면 먼저 만든 것.
-struct LibraryTemplates<'a>(&'a Library);
-
-impl Templates for LibraryTemplates<'_> {
-    fn source(&self, target: &ObjectRef) -> Option<String> {
-        let ns = Namespace::ALL.into_iter().find(|n| n.prefix() == target.ns)?;
-        let first = self.0.by_title(ns, &target.key).ok()?.into_iter().next()?;
-        self.0.get(first.id).ok()?.map(|d| d.body)
-    }
-}
-
 /// 저장하지 않은 글의 그리기 모델(편집기 미리보기 · spec/namumark.md). `handle`이 있으면 그 서재의 틀을 펼친다.
+/// 틀을 읽다 오류가 나면 「없는 틀」로 그리지 않고 오류로 답한다(P2-2 미룬 것).
 fn parse_op(req: &Value) -> Answer {
     let text = text(req, "text")?.to_string();
     let options = RenderOptions {
@@ -215,9 +222,140 @@ fn parse_op(req: &Value) -> Answer {
         template: req.get("ns").and_then(Value::as_str) == Some(Namespace::Template.code()),
     };
     let model = if req.get("handle").is_some() {
-        with_library(req, |lib| Ok(json!(render(&text, &options, &LibraryTemplates(lib)))))?
+        with_engine(req, |e| {
+            let templates = LibraryTemplates::new(&e.lib);
+            let model = render(&text, &options, &templates);
+            match templates.take_error() {
+                Some(err) => Err(fail(err)),
+                None => Ok(json!(model)),
+            }
+        })?
     } else {
         json!(render(&text, &options, &NoTemplates))
     };
     Ok(json!({"ok": true, "model": model}))
+}
+
+fn limit(req: &Value, default: u64, most: u64) -> usize {
+    req.get("limit").and_then(Value::as_u64).unwrap_or(default).clamp(1, most) as usize
+}
+
+fn number(req: &Value, key: &str, default: u64, most: u64) -> usize {
+    req.get(key).and_then(Value::as_u64).unwrap_or(default).min(most) as usize
+}
+
+fn summaries(docs: &[DocSummary]) -> Value {
+    json!(docs.iter().map(summary_json).collect::<Vec<_>>())
+}
+
+fn wanted_json(w: &[Wanted]) -> Value {
+    json!(w.iter().map(|w| json!({"ns": w.ns.code(), "title": w.title, "refs": w.refs})).collect::<Vec<_>>())
+}
+
+fn tz(req: &Value) -> i32 {
+    req.get("tz").and_then(Value::as_i64).unwrap_or(0).clamp(-14 * 60, 14 * 60) as i32
+}
+
+/// `doc.open` — 그리기 모델 글은 따로 돌려준다(답에 풀지 않고 끼운다).
+fn open_doc(e: &mut Engine, req: &Value) -> Result<(Value, String), Value> {
+    let id = doc_id(req, "doc")?;
+    let follow = req.get("follow").and_then(Value::as_bool).unwrap_or(true);
+    let Some(Opened { doc, deleted, model, redirected_from, stale }) = e.open_doc(id, follow).map_err(fail)? else {
+        return Err(not_found(&format!("문서 {id}")));
+    };
+    let mut d = summary_json(&doc);
+    d["deleted"] = json!(deleted);
+    Ok((json!({"ok": true, "doc": d, "redirected_from": redirected_from.as_ref().map(summary_json), "stale": stale}), model))
+}
+
+fn run_index(op: &str, e: &mut Engine, req: &Value) -> Answer {
+    match op {
+        "titles.exist" => {
+            let list = req.get("titles").and_then(Value::as_array).ok_or_else(|| bad("`titles`(목록)가 없음"))?;
+            let mut titles = Vec::with_capacity(list.len());
+            for t in list {
+                titles.push((namespace(t)?, text(t, "title")?.to_string()));
+            }
+            let docs = e.titles_exist(&titles).map_err(fail)?;
+            Ok(json!({"ok": true, "docs": docs.iter().map(|d| d.map(|d| d.to_string())).collect::<Vec<_>>()}))
+        }
+        "search.titles" => {
+            let ns = if req.get("ns").is_some() { namespace(req)? } else { Namespace::Doc };
+            let docs = e.search_titles(ns, text(req, "prefix")?, limit(req, 20, 200)).map_err(fail)?;
+            Ok(json!({"ok": true, "docs": summaries(&docs)}))
+        }
+        "search.body" => {
+            let hits: Vec<Hit> = e.search_body(text(req, "query")?, limit(req, 20, 200)).map_err(fail)?;
+            Ok(json!({"ok": true, "hits": hits.iter().map(|h| json!({"doc": summary_json(&h.doc), "snippet": h.snippet})).collect::<Vec<_>>()}))
+        }
+        "tree.children" => {
+            let category = req.get("category").and_then(Value::as_str);
+            let after = req.get("after").and_then(Value::as_str);
+            let c: Children = e.children(category, limit(req, 200, 10_000), after).map_err(fail)?;
+            let mut v = json!({
+                "ok": true,
+                "categories": c.categories.iter().map(|f| json!({"name": f.name, "total": f.total, "has_doc": f.has_doc, "cycle": f.cycle})).collect::<Vec<_>>(),
+                "docs": summaries(&c.docs),
+                "cycles": c.cycles,
+            });
+            if let Some(n) = c.uncategorized {
+                v["uncategorized"] = json!(n);
+            }
+            Ok(v)
+        }
+        "links.back" => {
+            let docs = e.links_back(doc_id(req, "doc")?, limit(req, 200, 10_000)).map_err(fail)?;
+            Ok(json!({"ok": true, "docs": summaries(&docs)}))
+        }
+        "links.wanted" => {
+            let w = e.links_wanted(limit(req, 50, 1_000)).map_err(fail)?;
+            Ok(json!({"ok": true, "wanted": wanted_json(&w)}))
+        }
+        "home.aggregates" => {
+            let o = HomeOptions {
+                recent: number(req, "recent", 10, 200),
+                wanted: number(req, "wanted", 10, 200),
+                days: number(req, "days", 84, 3_660).max(1),
+                tz_minutes: tz(req),
+                today_ms: None,
+            };
+            let h = e.home(&o).map_err(fail)?;
+            Ok(json!({
+                "ok": true,
+                "groups": h.groups.iter().map(|g| json!({"name": g.name, "total": g.total})).collect::<Vec<_>>(),
+                "uncategorized": h.uncategorized,
+                "recent": summaries(&h.recent),
+                "wanted": wanted_json(&h.wanted),
+                "rhythm": h.rhythm.iter().map(|d| json!({"day": d.day, "edits": d.edits})).collect::<Vec<_>>(),
+                "counts": counts_json(&h.counts),
+            }))
+        }
+        "stats.library" => {
+            let s = e.stats(tz(req), None).map_err(fail)?;
+            Ok(json!({
+                "ok": true,
+                "monthly_new": s.monthly_new.iter().map(|m| json!({"month": m.month, "docs": m.docs})).collect::<Vec<_>>(),
+                "daily_edits": s.daily_edits.iter().map(|d| json!({"day": d.day, "edits": d.edits})).collect::<Vec<_>>(),
+                "group_links": s.group_links.iter().map(|g| json!({"from": g.from, "to": g.to, "links": g.links})).collect::<Vec<_>>(),
+                "top_sources": s.top_sources.iter().map(|x| json!({"source": x.source, "refs": x.refs})).collect::<Vec<_>>(),
+                "top_linked": s.top_linked.iter().map(|x| json!({"doc": summary_json(&x.doc), "refs": x.refs})).collect::<Vec<_>>(),
+                "decades": s.decades.iter().map(|d| json!({"decade": d.decade, "docs": d.docs})).collect::<Vec<_>>(),
+                "as_of": s.as_of,
+            }))
+        }
+        "timeline.docs" => {
+            let docs = e.timeline_docs(text(req, "entity")?).map_err(fail)?;
+            Ok(json!({"ok": true, "docs": summaries(&docs)}))
+        }
+        "index.status" => {
+            let s = e.status().map_err(fail)?;
+            Ok(json!({"ok": true, "stale": s.stale, "total": s.total, "building": s.building}))
+        }
+        "index.step" => {
+            let ms = req.get("max_ms").and_then(Value::as_u64).unwrap_or(200).clamp(1, 1_000);
+            let r = e.step(std::time::Duration::from_millis(ms)).map_err(fail)?;
+            Ok(json!({"ok": true, "done": r.done, "stale": r.stale}))
+        }
+        other => Err(bad(format!("모르는 색인 op: {other}"))),
+    }
 }

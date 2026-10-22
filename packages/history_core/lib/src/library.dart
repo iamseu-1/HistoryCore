@@ -127,7 +127,93 @@ class Counts {
   final int total;
 }
 
-/// 열린 서재 하나(spec/engine-api.md의 `library.*` · `doc.*` · `rev.*`).
+/// `doc.open`의 답 — 머리 판의 그리기 모델(spec/namumark.md).
+class Opened {
+  Opened._(Map<String, dynamic> j)
+      : doc = DocSummary._(j['doc'] as Map<String, dynamic>),
+        deleted = (j['doc'] as Map<String, dynamic>)['deleted'] as bool,
+        model = j['model'] as Map<String, dynamic>,
+        redirectedFrom = j['redirected_from'] == null ? null : DocSummary._(j['redirected_from'] as Map<String, dynamic>),
+        stale = j['stale'] as bool;
+  final DocSummary doc;
+  final bool deleted;
+  final Map<String, dynamic> model;
+
+  /// 넘겨주기를 따라왔으면 처음 연 문서.
+  final DocSummary? redirectedFrom;
+
+  /// 색인이 낡아 이번에 새로 그렸다.
+  final bool stale;
+}
+
+/// 본문 찾기 한 건.
+class SearchHit {
+  SearchHit._(Map<String, dynamic> j)
+      : doc = DocSummary._(j['doc'] as Map<String, dynamic>),
+        snippet = j['snippet'] as String;
+  final DocSummary doc;
+
+  /// 첫 맞은 곳 앞뒤 글자(표식 없음).
+  final String snippet;
+}
+
+/// 분류 폴더 하나(`tree.children`의 하위 분류).
+class Folder {
+  Folder._(Map<String, dynamic> j)
+      : name = j['name'] as String,
+        total = j['total'] as int,
+        hasDoc = j['has_doc'] as bool,
+        cycle = j['cycle'] as bool;
+  final String name;
+
+  /// 그 분류와 아래 분류가 집인 일반 문서 수.
+  final int total;
+
+  /// 분류 문서가 있다(없으면 「상위 분류 없음」).
+  final bool hasDoc;
+
+  /// 고리를 끊으려고 부모 줄을 끊었다.
+  final bool cycle;
+}
+
+class FolderPage {
+  FolderPage._(Map<String, dynamic> j)
+      : categories = [for (final c in j['categories'] as List) Folder._(c as Map<String, dynamic>)],
+        docs = [for (final d in j['docs'] as List) DocSummary._(d as Map<String, dynamic>)],
+        uncategorized = j['uncategorized'] as int?,
+        cycles = [for (final c in j['cycles'] as List) c as String];
+  final List<Folder> categories;
+  final List<DocSummary> docs;
+
+  /// 맨 위에서만 — 「분류 안 됨」 문서 수.
+  final int? uncategorized;
+  final List<String> cycles;
+}
+
+/// 없는 문서를 가리킨 링크.
+class Wanted {
+  Wanted._(Map<String, dynamic> j)
+      : ns = Namespace.values.byName(j['ns'] as String),
+        title = j['title'] as String,
+        refs = j['refs'] as int;
+  final Namespace ns;
+  final String title;
+  final int refs;
+}
+
+class IndexStatus {
+  IndexStatus._(Map<String, dynamic> j)
+      : stale = j['stale'] as int,
+        total = j['total'] as int,
+        building = j['building'] as bool;
+
+  /// 다시 색인해야 하는 문서 수 — 0이 될 때까지 [Library.indexStep]을 뒤에서 부른다.
+  final int stale;
+  final int total;
+  final bool building;
+}
+
+/// 열린 서재 하나(spec/engine-api.md의 `library.*` · `doc.*` · `rev.*` · 색인 op).
 class Library {
   Library._(this._core, this._handle, this.info);
 
@@ -193,6 +279,70 @@ class Library {
       (await _call('namumark.parse', {'text': text, 'title': title, 'ns': ns.name}))['model'] as Map<String, dynamic>;
 
   Future<Counts> counts() async => Counts._(await _call('library.counts'));
+
+  /// 머리 판의 그리기 모델. 넘겨주기면 [follow]일 때 한 번 따라간다. 없는 문서면 null.
+  Future<Opened?> openDoc(String doc, {bool follow = true}) async {
+    try {
+      return Opened._(await _call('doc.open', {'doc': doc, 'follow': follow}));
+    } on HistoryCoreError catch (e) {
+      if (e.code == 'not_found') return null;
+      rethrow;
+    }
+  }
+
+  /// 있는 문서 ID — 같은 차례, 없으면 null(링크 색).
+  Future<List<String?>> titlesExist(List<(Namespace, String)> titles) async => [
+        for (final d in (await _call('titles.exist', {
+          'titles': [for (final (ns, t) in titles) {'ns': ns.name, 'title': t}],
+        }))['docs'] as List)
+          d as String?,
+      ];
+
+  /// 제목이 [prefix]로 시작하는 문서(제목 차례).
+  Future<List<DocSummary>> searchTitles(String prefix, {Namespace ns = Namespace.doc, int limit = 20}) async => [
+        for (final d in (await _call('search.titles', {'prefix': prefix, 'ns': ns.name, 'limit': limit}))['docs'] as List)
+          DocSummary._(d as Map<String, dynamic>),
+      ];
+
+  /// 본문 찾기 — 한글 · 한자 2글자 조각, 첫 [limit]건(문서 만든 차례).
+  Future<List<SearchHit>> searchBody(String query, {int limit = 20}) async => [
+        for (final h in (await _call('search.body', {'query': query, 'limit': limit}))['hits'] as List)
+          SearchHit._(h as Map<String, dynamic>),
+      ];
+
+  /// 분류 폴더 하나. [category]가 null이면 맨 위, 빈 글이면 「분류 안 됨」. [after](제목)부터 이어 받는다.
+  Future<FolderPage> treeChildren({String? category, int limit = 200, String? after}) async =>
+      FolderPage._(await _call('tree.children', {'category': category, 'limit': limit, 'after': after}));
+
+  /// 이 문서로 링크한 문서(제목 차례).
+  Future<List<DocSummary>> linksBack(String doc, {int limit = 200}) async => [
+        for (final d in (await _call('links.back', {'doc': doc, 'limit': limit}))['docs'] as List)
+          DocSummary._(d as Map<String, dynamic>),
+      ];
+
+  /// 만들 문서 — 가리킨 문서 수 많은 차례.
+  Future<List<Wanted>> linksWanted({int limit = 50}) async => [
+        for (final w in (await _call('links.wanted', {'limit': limit}))['wanted'] as List)
+          Wanted._(w as Map<String, dynamic>),
+      ];
+
+  /// 대문 모음(spec/engine-api.md 「home.aggregates」). 날은 기기 시간대로 자른다.
+  Future<Map<String, dynamic>> home({int recent = 10, int wanted = 10, int days = 84}) async =>
+      _call('home.aggregates', {'recent': recent, 'wanted': wanted, 'days': days, 'tz': DateTime.now().timeZoneOffset.inMinutes});
+
+  /// 서재 통계(spec/engine-api.md 「stats.library」).
+  Future<Map<String, dynamic>> stats() async => _call('stats.library', {'tz': DateTime.now().timeZoneOffset.inMinutes});
+
+  /// 이 연표 항목을 잇는 문서.
+  Future<List<DocSummary>> timelineDocs(String entity) async => [
+        for (final d in (await _call('timeline.docs', {'entity': entity}))['docs'] as List)
+          DocSummary._(d as Map<String, dynamic>),
+      ];
+
+  Future<IndexStatus> indexStatus() async => IndexStatus._(await _call('index.status'));
+
+  /// 낡은 문서를 [maxMs] 동안 고친다. 남은 수를 돌려준다 — 0이 될 때까지 뒤에서 부른다.
+  Future<int> indexStep({int maxMs = 200}) async => (await _call('index.step', {'max_ms': maxMs}))['stale'] as int;
 
   Future<void> close() async {
     await _call('library.close');

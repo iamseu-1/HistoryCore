@@ -108,4 +108,29 @@ void main() {
     expect(((((page['blocks'] as List).first as Map)['inl'] as List).first as Map)['t'], 'param');
     await lib.close();
   }, skip: windowsOnly);
+
+  test('열기 · 찾기 · 나무 · 대문을 한 서재에서', () async {
+    final lib = await Library.open(core, dir.path);
+    await lib.create(Namespace.category, '조선', '');
+    final a = await lib.create(Namespace.doc, '임진왜란', '[[분류:조선]] 1592년 [[이순신]] [[연표:01A]]');
+    final opened = (await lib.openDoc(a.doc))!;
+    expect(opened.doc.title, '임진왜란');
+    expect(opened.stale, isFalse);
+    expect((opened.model['blocks'] as List), isNotEmpty);
+    final hits = await lib.searchBody('1592');
+    expect(hits.single.doc.id, a.doc);
+    expect(hits.single.snippet, contains('1592'));
+    final root = await lib.treeChildren();
+    expect(root.categories.single.name, '조선');
+    expect(root.categories.single.total, 1);
+    expect((await lib.treeChildren(category: '조선')).docs.single.title, '임진왜란');
+    expect(await lib.titlesExist([(Namespace.doc, '임진왜란'), (Namespace.doc, '이순신')]), [a.doc, null]);
+    expect((await lib.linksWanted()).single.title, '이순신');
+    expect((await lib.timelineDocs('01A')).single.title, '임진왜란');
+    final home = await lib.home();
+    expect((home['groups'] as List).single['name'], '조선');
+    expect((await lib.indexStatus()).stale, 0);
+    expect(await lib.indexStep(), 0);
+    await lib.close();
+  }, skip: windowsOnly);
 }

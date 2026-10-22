@@ -10,5 +10,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 history_library = { path = "../library" }
+history_index = { path = "../index" }
 history_namumark = { path = "../namumark" }
 serde_json = "1"

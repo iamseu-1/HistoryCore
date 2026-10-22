@@ -1,6 +1,6 @@
 # 엔진 질의 약속
 
-다리 `hc_call(요청 JSON) → 답 JSON`(UTF-8). 앱은 이 문서만 보고 엔진을 부른다. P2-1 · P2-2가 정한 것은 **됨**, 뒤 계획이 채울 것은 **예정**(모양은 그 계획에서 굳히고 이 문서를 고친다 — 아직 출시 전이라 ABI 판은 1 그대로).
+다리 `hc_call(요청 JSON) → 답 JSON`(UTF-8). 앱은 이 문서만 보고 엔진을 부른다. P2-1 · P2-2 · P2-3이 정한 것은 **됨**, 뒤 계획이 채울 것은 **예정**(모양은 그 계획에서 굳히고 이 문서를 고친다 — 아직 출시 전이라 ABI 판은 1 그대로).
 
 ## 약속
 
@@ -22,7 +22,7 @@
 | `newer_format` | 더 새 형식의 서재 — 건드리지 않았다 |
 | `corrupt` · `sqlite` · `io` | 저장소 · 파일 문제 |
 
-## 됨 (P2-1 · P2-2)
+## 됨 (P2-1 · P2-2 · P2-3)
 
 | op | 요청 | 답 |
 | --- | --- | --- |
@@ -38,17 +38,31 @@
 | `doc.by_title` | `handle` · `ns` · `title` | `docs`: [`id` · `ns` · `title` · `head` · `created` · `updated`] — 만든 차례, 지운 것 뺌 |
 | `doc.history` | `handle` · `doc` · `limit`?(50, 많아야 1000) · `before`?(hlc) | `revisions`: [`id` · `doc` · `parent` · `parent2` · `device` · `hlc` · `kind`(`content`/`deleted`) · `ns` · `title` · `message` · `len`] — 새 것부터 |
 | `rev.get` | `handle` · `rev` | `revision`: 위 판 정보 + `body` |
-| `namumark.parse` | `text` · `title`? · `ns`?(`template`이면 틀 문서로 봄) · `handle`?(있으면 그 서재의 틀을 펼침) | `model`: 그리기 모델(spec/namumark.md) |
+| `namumark.parse` | `text` · `title`? · `ns`?(`template`이면 틀 문서로 봄) · `handle`?(있으면 그 서재의 틀을 펼침) | `model`: 그리기 모델(spec/namumark.md). 틀을 읽다 오류가 나면 「없는 틀」로 그리지 않고 오류로 답한다 |
+
+`doc.*`의 쓰는 op는 서재에 커밋한 뒤 같은 호출 안에서 그 문서를 색인한다(색인이 실패해도 저장은 그대로 — 그 문서는 낡음으로 남아 `index.step`이 다시 한다).
+
+### 색인 op (P2-3)
+
+「요약」은 `doc.by_title`의 문서 모양(`id` · `ns` · `title` · `head` · `created` · `updated`)이다. 색인은 `HistoryCore/index.db`(spec/library-format.md 「색인」)에 있고, 서재를 열 때 통째로 다시 짓지 않는다 — 앱은 `index.status`의 `stale`이 0이 될 때까지 `index.step`을 뒤에서 부른다(색인이 없던 서재를 처음 열면 모든 문서가 낡음이다).
+
+| op | 요청 | 답 |
+| --- | --- | --- |
+| `doc.open` | `handle` · `doc` · `follow`?(기본 참 — 넘겨주기면 한 번 따라감) | `doc`: 요약 + `deleted` · `model`: 그리기 모델(spec/namumark.md, 글 그대로 끼움) · `redirected_from`: 요약 \| null · `stale`: 색인이 낡아 이 호출에서 새로 그렸으면 참. 없는 문서면 `not_found` |
+| `titles.exist` | `handle` · `titles`: [`{ns, title}`] | `docs`: [ID \| null] — 같은 차례, 제목은 정규화해서, 같은 제목이 둘이면 먼저 만든 것 |
+| `search.titles` | `handle` · `prefix` · `ns`?(기본 `doc`) · `limit`?(20, 많아야 200) | `docs`: [요약] — 제목 차례 |
+| `search.body` | `handle` · `query` · `limit`?(20, 많아야 200) | `hits`: [`{doc: 요약, snippet}`] — 문서 만든 차례. `snippet`은 첫 맞은 곳 앞뒤 약 40자의 글자(표식 없음). 한글 · 한자 2글자 조각으로 찾고 3글자 넘는 덩이는 그대로 들었는지 확인한다. 1글자 한글 · 한자는 그 글자로 시작하는 조각으로 찾는다. 지운 문서 · 색인이 낡은 문서는 나오지 않는다 |
+| `tree.children` | `handle` · `category`?(없거나 null이면 맨 위, 빈 글이면 「분류 안 됨」) · `limit`?(200) · `after`?(문서 제목, 이어 받기) | `categories`: [`{name, total, has_doc, cycle}`](이름 차례) · `docs`: [요약](제목 차례, 그 분류가 집인 일반 문서) · 맨 위에서만 `uncategorized`: 수 · `cycles`: [끊은 분류 이름] |
+| `links.back` | `handle` · `doc` · `limit`?(200) | `docs`: [요약] — 이 문서 제목으로 링크(본문 · 넘겨주기)한 살아 있는 문서, 제목 차례 |
+| `links.wanted` | `handle` · `limit`?(50) | `wanted`: [`{ns, title, refs}`] — 없는 문서를 가리킨 본문 링크, 가리킨 문서 수 많은 차례 |
+| `home.aggregates` | `handle` · `recent`?(10) · `wanted`?(10) · `days`?(84) · `tz`?(기기 시간대, UTC에서 분 — 기본 0) | `groups`: [`{name, total}`](맨 위 분류) · `uncategorized` · `recent`: [요약](바뀐 차례) · `wanted`: 위와 같음 · `rhythm`: [`{day: "YYYY-MM-DD", edits}`](오늘까지 `days`일, 빈 날은 0) · `counts`: `library.counts`와 같은 모양 |
+| `stats.library` | `handle` · `tz`? | `monthly_new`: [`{month: "YYYY-MM", docs}`](살아 있는 일반 문서가 만들어진 달) · `daily_edits`: [`{day, edits}`](오늘까지 365일) · `group_links`: [`{from, to, links}`](맨 위 분류 사이 본문 링크) · `top_sources`: [`{source, refs}`](각주 속 『…』, 20) · `top_linked`: [`{doc: 요약, refs}`](20) · `decades`: [`{decade, docs}`](다루는 해) · `as_of`: 갈래 사이 링크를 마지막으로 다 센 때(ms, 0이면 아직) |
+| `timeline.docs` | `handle` · `entity` | `docs`: [요약] — 그 연표 항목을 잇는 문서(연표 링크 · 연표 띠), 제목 차례 |
+| `index.status` | `handle` | `stale`: 다시 색인해야 하는 문서 수 · `total`: 색인한 문서 수 · `building`: 통째 짓는 중 |
+| `index.step` | `handle` · `max_ms`?(200, 많아야 1000) | `done`: 이번에 고친 문서 수 · `stale`: 남은 수. 남는 시간에 갈래 사이 링크를 센다 |
 
 ## 예정
 
 | op | 계획 | 하는 일 |
 | --- | --- | --- |
-| `doc.open` | P2-3 | 저장 때 굳힌 그리기 모델 · 분류 · 각주 · 넘겨주기 따라가기(한 번) |
-| `titles.exist` | P2-3 | 제목 목록 → 있는 문서 ID(설계 5-6, 링크 색) |
-| `search.titles` · `search.body` | P2-3 | 제목 앞부분 · 본문 찾기(한글 · 한자 2글자 조각), 첫 n건 |
-| `tree.children` | P2-3 | 분류 폴더 하나: 하위 분류(아래 문서 합) · 문서 |
-| `links.back` · `links.wanted` | P2-3 | 가리키는 문서 · 만들 문서 |
-| `home.aggregates` · `stats.*` | P2-3 | 대문 · 서재 통계 모음(설계 5-5) |
-| `timeline.docs` | P2-3 | 연표 항목ID → 이어진 문서(창구 `docs_for_entity`) |
 | `hanja.get` · `hanja.search` | P2-4 | 자전 조목 · 찾기 |

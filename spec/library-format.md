@@ -43,3 +43,22 @@ NFC로 맞추고(호환 한자 → 통합 한자) 보이지 않는 글자(U+200B
 ## 이름 바꾸기 · 넘겨주기
 
 이름을 바꾸면 같은 본문 · 새 제목의 판이 더해진다. 넘겨주기를 남기면(기본) 옛 제목에 새 문서가 생기고 본문은 `#넘겨주기 <새 제목>`(일반 문서가 아니면 `분류:새 제목`처럼 접두어를 붙인다) 한 줄이다. 넘겨주기를 따라가는 일은 해석기(P2-2) · 색인(P2-3)이 한다.
+
+## 색인 (`HistoryCore/index.db`)
+
+설계 5-5 · 5-7. 원본에서 언제든 다시 짓는 파생물이라 지워도 된다 — 동기화로 보내지 않는다.
+
+- **정체**: `PRAGMA application_id` = `0x48434958`("HCIX"), `user_version` = 1, `meta.library` = 서재 ID.
+  - 우리 것인데 판이 다르거나, 다른 서재의 색인이거나, SQLite가 아니면(깨짐) 그 파일만 지우고 새로 만든다.
+  - application_id가 남의 것이면 건드리지 않고 `not_a_library`로 답한다.
+  - 옛 앱이 자료 폴더 바로 아래 둔 `index.db`는 다른 파일이다 — 읽지도 쓰지도 않는다.
+- **눈금**: `meta.seq` = 색인에 든 마지막 판 번호(`rev.seq`, 늘기만 한다). 그 뒤의 판(끊긴 저장 · 엔진 없이 들어온 판)과 `stale` 표(바뀐 틀을 쓰는 문서 · 틀을 읽다 실패한 문서)가 「낡음」이다.
+  - 열 때 다시 짓지 않고, `index.step`이 조금씩 따라잡는다.
+  - 눈금은 색인 트랜잭션 안에서 옮기므로 끊겨도 어긋나지 않는다(`synchronous=NORMAL`).
+- **문서 번호**: `item.rowid` — 처음 색인할 때 정해지고 바뀌지 않는다. `model`(그리기 모델 JSON, zstd) · `plain`(찾기 확인 · 미리보기용 NFC 글자, zstd) · 조각 색인이 이 번호를 쓴다.
+- **조각 색인**: `fts0`–`fts3`(문서 번호 % 4) — `fts5(t, content='', contentless_delete=1, detail=none, tokenize='ascii')`.
+  - 넣는 글은 Rust가 자른 조각을 띄어 쓴 것이다: 한글 · 한자 덩이의 겹치는 2글자와 끝 글자, 그 밖의 낱말(소문자).
+- **뽑기 표**: `link` · `target`(본문 링크 대상별 문서 수 · 있는지) · `member` · `note` · `source` · `entity` · `uses` · `years` · `folder`(분류마다 바로 든 일반 문서 수).
+- **통계 표**: `stat_edit` · `stat_new`(UTC 시마다) · `source_count` · `decade` · `group_link`(뒤에서 다시 센다).
+- **통째 짓기**: `index.db.building`과 조각 색인마다 `index.db.building-fts<k>`에 나란히 짓고, 조각 색인을 옮겨 붙인 뒤 `index.db`와 바꿔 끼운다. 남은 `.building*` 파일은 다음 열기에서 지운다.
+

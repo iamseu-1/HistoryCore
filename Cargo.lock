@@ -183,6 +183,7 @@ dependencies = [
 name = "history_core_ffi"
 version = "0.0.1"
 dependencies = [
+ "history_index",
  "history_library",
  "history_namumark",
  "serde_json",
