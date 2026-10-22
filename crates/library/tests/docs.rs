@@ -148,3 +148,30 @@ fn revisions_keep_moving_forward_after_a_restart_with_the_clock_set_back() {
     drop(lib);
     std::fs::remove_dir_all(&app).unwrap();
 }
+
+#[test]
+fn crlf_is_stored_as_lf() {
+    // P2-2 미룬 것 — 그리기 모델의 문단 범위는 줄끝을 \n으로 맞춘 글의 위치라, 저장하는 본문도 그 글이어야 한다.
+    let app = temp("줄끝");
+    let mut lib = Library::open(&app).unwrap();
+    let a = lib.create(Namespace::Doc, "줄끝", "가\r\n나\r다", "").unwrap();
+    assert_eq!(lib.get(a.doc).unwrap().unwrap().body, "가\n나\n다");
+    let s = lib.save(a.doc, a.rev, "가\r\n나\r\n다\r\n라", "").unwrap();
+    assert_eq!(lib.get(a.doc).unwrap().unwrap().body, "가\n나\n다\n라");
+    assert_eq!(lib.history(a.doc, 10, None).unwrap()[0].len, "가\n나\n다\n라".len() as u64);
+    drop(lib);
+    let _ = s;
+    std::fs::remove_dir_all(&app).unwrap();
+}
+
+#[test]
+fn saving_the_same_text_with_other_line_endings_changes_nothing() {
+    let app = temp("같은 글 다른 줄끝");
+    let mut lib = Library::open(&app).unwrap();
+    let a = lib.create(Namespace::Doc, "같은 글", "가\n나", "").unwrap();
+    let s = lib.save(a.doc, a.rev, "가\r\n나", "").unwrap();
+    assert!(!s.changed);
+    assert_eq!(lib.history(a.doc, 10, None).unwrap().len(), 1);
+    drop(lib);
+    std::fs::remove_dir_all(&app).unwrap();
+}

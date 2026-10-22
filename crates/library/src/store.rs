@@ -104,6 +104,14 @@ pub struct Saved {
     pub changed: bool,
 }
 
+/// 한꺼번에 들일 문서 하나(`Library::import`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NewDoc {
+    pub ns: Namespace,
+    pub title: String,
+    pub body: String,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Renamed {
     pub rev: RevId,

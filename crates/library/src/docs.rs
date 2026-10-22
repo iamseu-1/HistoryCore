@@ -3,9 +3,10 @@ use crate::error::{Error, Result};
 use crate::hlc::Hlc;
 use crate::ids::{DeviceId, DocId, RevId};
 use crate::ns::Namespace;
-use crate::store::{Counts, Doc, DocSummary, Library, Renamed, RevInfo, RevKind, Revision, Saved};
+use crate::store::{Counts, Doc, DocSummary, Library, NewDoc, Renamed, RevInfo, RevKind, Revision, Saved};
 use crate::title::normalize_title;
 use rusqlite::{params, Connection, OptionalExtension};
+use std::borrow::Cow;
 
 const ZSTD_LEVEL: i32 = 3;
 /// 이름공간 · 지움별 문서 수.
@@ -40,6 +41,15 @@ fn load_head(db: &Connection, doc: DocId) -> Result<Head> {
     .ok_or_else(|| Error::NotFound(format!("문서 {doc}")))
 }
 
+/// 줄끝을 `\n`으로 맞춘다 — 그리기 모델의 문단 범위(UTF-16)가 저장된 본문의 위치와 맞도록(spec/namumark.md).
+fn lf(body: &str) -> Cow<'_, str> {
+    if body.contains('\r') {
+        Cow::Owned(body.replace("\r\n", "\n").replace('\r', "\n"))
+    } else {
+        Cow::Borrowed(body)
+    }
+}
+
 fn encode(body: &str) -> Result<Vec<u8>> {
     Ok(zstd::bulk::compress(body.as_bytes(), ZSTD_LEVEL)?)
 }
@@ -58,19 +68,17 @@ fn read_body(db: &Connection, rev: RevId) -> Result<String> {
 }
 
 fn insert_rev(db: &Connection, device: DeviceId, hlc: Hlc, r: &NewRev) -> Result<()> {
-    db.execute(
+    db.prepare_cached(
         "INSERT INTO rev(id, doc, parent, parent2, device, hlc, kind, ns, title, message, len, body)
          VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        params![r.id, r.doc, r.parent, device, hlc, r.kind, r.ns, r.title, r.message, r.body.len() as i64, encode(r.body)?],
-    )?;
+    )?
+    .execute(params![r.id, r.doc, r.parent, device, hlc, r.kind, r.ns, r.title, r.message, r.body.len() as i64, encode(r.body)?])?;
     Ok(())
 }
 
 fn insert_doc(db: &Connection, doc: DocId, ns: Namespace, title: &str, head: RevId, hlc: Hlc) -> Result<()> {
-    db.execute(
-        "INSERT INTO doc(id, ns, title, head, created, updated, deleted) VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0)",
-        params![doc, ns, title, head, hlc],
-    )?;
+    db.prepare_cached("INSERT INTO doc(id, ns, title, head, created, updated, deleted) VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0)")?
+        .execute(params![doc, ns, title, head, hlc])?;
     Ok(())
 }
 
@@ -93,6 +101,7 @@ fn rev_info(r: &rusqlite::Row<'_>) -> rusqlite::Result<RevInfo> {
 impl Library {
     pub fn create(&mut self, ns: Namespace, title: &str, body: &str, message: &str) -> Result<Saved> {
         let title = normalize_title(title)?;
+        let body = &*lf(body);
         let (doc, rev, hlc, device) = (DocId::new(), RevId::new(), self.clock.now(), self.info.device);
         let tx = self.db.transaction()?;
         insert_rev(&tx, device, hlc, &NewRev { id: rev, doc, parent: None, kind: RevKind::Content, ns, title: &title, message, body })?;
@@ -105,6 +114,7 @@ impl Library {
     }
 
     pub fn save(&mut self, doc: DocId, base: RevId, body: &str, message: &str) -> Result<Saved> {
+        let body = &*lf(body);
         let device = self.info.device;
         let tx = self.db.transaction()?;
         let h = load_head(&tx, doc)?;
@@ -122,6 +132,42 @@ impl Library {
         tx.execute("UPDATE doc SET head = ?2, updated = ?3, deleted = 0 WHERE id = ?1", params![doc, rev, hlc])?;
         tx.commit()?;
         Ok(Saved { doc, rev, hlc, changed: true })
+    }
+
+    /// 한꺼번에 들이기(측정기 · 새 기기) — `batch`편마다 트랜잭션 하나, `create`와 같은 규칙(제목 정규화 · 줄끝 · 첫 판).
+    /// 쓸 수 없는 제목을 만나면 그 묶음은 넣지 않고 `BadTitle("<n>번째: …")`로 멈춘다. 앞 묶음은 남는다.
+    pub fn import(&mut self, docs: &mut dyn Iterator<Item = NewDoc>, batch: usize) -> Result<Vec<Saved>> {
+        let batch = batch.max(1);
+        let device = self.info.device;
+        let mut out = Vec::new();
+        let mut pending: Vec<(Namespace, String, String)> = Vec::with_capacity(batch);
+        let mut seen = 0usize;
+        loop {
+            pending.clear();
+            for d in (&mut *docs).take(batch) {
+                seen += 1;
+                let title = normalize_title(&d.title).map_err(|e| match e {
+                    Error::BadTitle(why) => Error::BadTitle(format!("{seen}번째: {why}")),
+                    e => e,
+                })?;
+                let body = match lf(&d.body) {
+                    Cow::Borrowed(_) => d.body,
+                    Cow::Owned(b) => b,
+                };
+                pending.push((d.ns, title, body));
+            }
+            if pending.is_empty() {
+                return Ok(out);
+            }
+            let tx = self.db.transaction()?;
+            for (ns, title, body) in &pending {
+                let (doc, rev, hlc) = (DocId::new(), RevId::new(), self.clock.now());
+                insert_rev(&tx, device, hlc, &NewRev { id: rev, doc, parent: None, kind: RevKind::Content, ns: *ns, title, message: "", body })?;
+                insert_doc(&tx, doc, *ns, title, rev, hlc)?;
+                out.push(Saved { doc, rev, hlc, changed: true });
+            }
+            tx.commit()?;
+        }
     }
 
     pub fn rename(&mut self, doc: DocId, base: RevId, title: &str, keep_redirect: bool, message: &str) -> Result<Renamed> {
