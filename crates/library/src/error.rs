@@ -1,4 +1,4 @@
-use crate::ids::{DocId, RevId};
+use crate::ids::{DocId, LibraryId, RevId};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -21,6 +21,12 @@ pub enum Error {
     Corrupt(String),
     Sqlite(rusqlite::Error),
     Io(std::io::Error),
+    /// 다른 서재의 묶음 — 들지 않았다(spec/drive-format.md 4절).
+    WrongLibrary(LibraryId),
+    /// 묶음을 풀 수 없거나 모양이 틀림.
+    BadPack(String),
+    /// 견주어 합칠 판이 그 문서의 다른 내용 잎이 아님.
+    NotALeaf(RevId),
     /// 시험용 실패 주입(`docs.rs` 단위 검사). 보통 실행에서는 생기지 않는다.
     Injected,
 }
@@ -39,6 +45,9 @@ impl Error {
             Error::Corrupt(_) => "corrupt",
             Error::Sqlite(_) => "sqlite",
             Error::Io(_) => "io",
+            Error::WrongLibrary(_) => "wrong_library",
+            Error::BadPack(_) => "bad_pack",
+            Error::NotALeaf(_) => "not_a_leaf",
             Error::Injected => "injected",
         }
     }
@@ -58,6 +67,9 @@ impl fmt::Display for Error {
             Error::Corrupt(what) => write!(f, "저장소 값이 이상함: {what}"),
             Error::Sqlite(e) => write!(f, "SQLite: {e}"),
             Error::Io(e) => write!(f, "파일: {e}"),
+            Error::WrongLibrary(found) => write!(f, "다른 서재의 묶음(서재 {found}) — 들지 않음"),
+            Error::BadPack(why) => write!(f, "묶음을 읽을 수 없음: {why}"),
+            Error::NotALeaf(rev) => write!(f, "합칠 수 있는 다른 판이 아님: {rev}"),
             Error::Injected => write!(f, "시험용 실패 주입"),
         }
     }

@@ -1,6 +1,7 @@
-//! 서재 일의 다리 — `library.*` · `doc.*` · `rev.*` · 색인 op(spec/engine-api.md). 열린 서재(엔진 = 서재 + 색인)는 손잡이 표에 든다.
+//! 서재 일의 다리 — `library.*` · `doc.*` · `rev.*` · 색인 op · `sync.*`(spec/engine-api.md). 열린 서재(엔진 = 서재 + 색인)는 손잡이 표에 든다.
 use history_index::{Children, Engine, Hit, HomeOptions, LibraryTemplates, Opened, Wanted};
-use history_library::{Counts, Doc, DocId, DocSummary, Error, Hlc, Library, Namespace, RevId, RevInfo, Saved};
+use base64::Engine as _;
+use history_library::{Applied, Counts, Doc, DocId, DocSummary, Error, Hlc, Library, LibraryId, Namespace, RevId, RevInfo, Saved};
 use history_namumark::{render, NoTemplates, RenderOptions};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -29,6 +30,7 @@ fn table() -> MutexGuard<'static, Open> {
 type Answer = Result<Value, Value>;
 
 const LIBRARY_OPS: [&str; 9] = ["library.counts", "doc.create", "doc.save", "doc.rename", "doc.delete", "doc.get", "doc.by_title", "doc.history", "rev.get"];
+const SYNC_OPS: [&str; 5] = ["sync.export", "sync.apply", "sync.status", "sync.join", "library.backup"];
 const INDEX_OPS: [&str; 11] =
     ["titles.exist", "search.titles", "search.body", "tree.children", "links.back", "links.wanted", "home.aggregates", "stats.library", "timeline.docs", "index.status", "index.step"];
 
@@ -40,6 +42,7 @@ pub fn handle_op(op: &str, req: &Value) -> Option<Reply> {
         "namumark.parse" => parse_op(req),
         "doc.open" => return Some(with_engine(req, |e| open_doc(e, req)).map_or_else(Reply::Json, |(v, model)| Reply::WithModel(v, model))),
         op if LIBRARY_OPS.contains(&op) => with_engine(req, |e| run(op, e, req)),
+        op if SYNC_OPS.contains(&op) => with_engine(req, |e| run_sync(op, e, req)),
         op if INDEX_OPS.contains(&op) => with_engine(req, |e| run_index(op, e, req)),
         _ => return None,
     };
@@ -54,6 +57,9 @@ fn fail(e: Error) -> Value {
     let mut v = json!({"ok": false, "error": e.to_string(), "code": e.code()});
     if let Error::StaleBase { head } = &e {
         v["head"] = json!(head.to_string());
+    }
+    if let Error::WrongLibrary(found) = &e {
+        v["found"] = json!(found.to_string());
     }
     v
 }
@@ -169,7 +175,12 @@ fn run(op: &str, e: &mut Engine, req: &Value) -> Answer {
             Ok(saved(&s))
         }
         "doc.save" => {
-            let s = e.save(doc_id(req, "doc")?, rev_id(req, "base")?, text(req, "body")?, optional_text(req, "message")).map_err(fail)?;
+            let (doc, base, body, message) = (doc_id(req, "doc")?, rev_id(req, "base")?, text(req, "body")?, optional_text(req, "message"));
+            let s = match req.get("merge") {
+                Some(Value::Null) | None => e.save(doc, base, body, message),
+                Some(_) => e.save_merge(doc, base, rev_id(req, "merge")?, body, message),
+            }
+            .map_err(fail)?;
             Ok(saved(&s))
         }
         "doc.delete" => {
@@ -184,7 +195,11 @@ fn run(op: &str, e: &mut Engine, req: &Value) -> Answer {
         "doc.get" => {
             let id = doc_id(req, "doc")?;
             match e.lib.get(id).map_err(fail)? {
-                Some(d) => Ok(json!({"ok": true, "doc": doc_json(&d)})),
+                Some(d) => {
+                    let mut v = doc_json(&d);
+                    v["conflict"] = json!(e.lib.conflict_leaves(id).map_err(fail)?.iter().map(|r| r.to_string()).collect::<Vec<_>>());
+                    Ok(json!({"ok": true, "doc": v}))
+                }
                 None => Err(not_found(&format!("문서 {id}"))),
             }
         }
@@ -210,6 +225,53 @@ fn run(op: &str, e: &mut Engine, req: &Value) -> Answer {
             }
         }
         other => Err(bad(format!("모르는 서재 op: {other}"))),
+    }
+}
+
+fn ids(docs: &[DocId]) -> Value {
+    json!(docs.iter().map(|d| d.to_string()).collect::<Vec<_>>())
+}
+
+fn applied_json(r: &Applied) -> Value {
+    json!({
+        "ok": true, "added": r.added, "skipped": r.skipped, "held": r.held, "forked": r.forked, "merged": r.merged,
+        "conflicts": ids(&r.conflicts), "revived": ids(&r.revived),
+    })
+}
+
+fn seq_of(req: &Value) -> Result<i64, Value> {
+    req.get("after_seq").and_then(Value::as_i64).ok_or_else(|| bad("`after_seq`(수)가 없음"))
+}
+
+/// 동기화 op(spec/drive-format.md) — 묶음 바이트는 base64 글로 오간다.
+fn run_sync(op: &str, e: &mut Engine, req: &Value) -> Answer {
+    match op {
+        "sync.export" => {
+            let no = req.get("no").and_then(Value::as_u64).ok_or_else(|| bad("`no`(수)가 없음"))?;
+            Ok(match e.lib.export(seq_of(req)?, no).map_err(fail)? {
+                Some(x) => json!({"ok": true, "pack": base64::engine::general_purpose::STANDARD.encode(&x.pack), "seq": x.seq, "count": x.count, "more": x.more}),
+                None => json!({"ok": true, "pack": null, "seq": seq_of(req)?, "count": 0, "more": false}),
+            })
+        }
+        "sync.apply" => {
+            let pack = base64::engine::general_purpose::STANDARD.decode(text(req, "pack")?).map_err(|_| bad("`pack`이 base64가 아님"))?;
+            Ok(applied_json(&e.apply(&pack).map_err(fail)?))
+        }
+        "sync.status" => {
+            let s = e.lib.sync_status(seq_of(req)?).map_err(fail)?;
+            let i = e.lib.info();
+            Ok(json!({"ok": true, "library": i.library.to_string(), "device": i.device.to_string(), "seq": s.seq, "pending": s.pending, "held": s.held, "conflicts": s.conflicts}))
+        }
+        "sync.join" => {
+            let library = LibraryId::parse(text(req, "library")?).ok_or_else(|| bad("`library`가 UUID가 아님"))?;
+            e.join(library).map_err(fail)?;
+            Ok(json!({"ok": true, "library": library.to_string()}))
+        }
+        "library.backup" => {
+            e.lib.backup(Path::new(text(req, "path")?)).map_err(fail)?;
+            Ok(json!({"ok": true}))
+        }
+        other => Err(bad(format!("모르는 동기화 op: {other}"))),
     }
 }
 
@@ -265,7 +327,8 @@ fn open_doc(e: &mut Engine, req: &Value) -> Result<(Value, String), Value> {
     };
     let mut d = summary_json(&doc);
     d["deleted"] = json!(deleted);
-    Ok((json!({"ok": true, "doc": d, "redirected_from": redirected_from.as_ref().map(summary_json), "stale": stale}), model))
+    let conflict: Vec<String> = e.lib.conflict_leaves(doc.id).map_err(fail)?.iter().map(|r| r.to_string()).collect();
+    Ok((json!({"ok": true, "doc": d, "redirected_from": redirected_from.as_ref().map(summary_json), "stale": stale, "conflict": conflict}), model))
 }
 
 fn run_index(op: &str, e: &mut Engine, req: &Value) -> Answer {

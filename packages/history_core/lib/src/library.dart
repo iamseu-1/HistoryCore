@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:typed_data';
+
 import 'engine.dart';
 
 /// 서재 이름공간(설계 5-1). 이름이 다리의 `ns` 값이다.
@@ -9,12 +12,22 @@ class StaleBaseError extends HistoryCoreError {
   final String head;
 }
 
+/// 다른 서재의 묶음 — 들지 않았다. [found]가 묶음의 서재(spec/drive-format.md 4절).
+class WrongLibraryError extends HistoryCoreError {
+  WrongLibraryError(super.message, {required this.found}) : super(code: 'wrong_library');
+  final String found;
+}
+
 class LibraryInfo {
   LibraryInfo._(Map<String, dynamic> j)
       : library = j['library'] as String,
         device = j['device'] as String,
         format = j['format'] as int,
         folder = j['folder'] as String;
+  LibraryInfo._joined(LibraryInfo i, this.library)
+      : device = i.device,
+        format = i.format,
+        folder = i.folder;
   final String library;
   final String device;
   final int format;
@@ -58,7 +71,8 @@ class DocRecord {
         created = j['created'] as int,
         updated = j['updated'] as int,
         deleted = j['deleted'] as bool,
-        body = j['body'] as String;
+        body = j['body'] as String,
+        conflict = [for (final r in (j['conflict'] as List?) ?? const []) r as String];
   final String id;
   final Namespace ns;
   final String title;
@@ -67,6 +81,9 @@ class DocRecord {
   final int updated;
   final bool deleted;
   final String body;
+
+  /// 충돌이면 머리가 아닌 다른 잎 판들(새 것부터) — 견주어 합쳐 [Library.save]의 `merge`로 푼다.
+  final List<String> conflict;
 }
 
 class DocSummary {
@@ -134,7 +151,8 @@ class Opened {
         deleted = (j['doc'] as Map<String, dynamic>)['deleted'] as bool,
         model = j['model'] as Map<String, dynamic>,
         redirectedFrom = j['redirected_from'] == null ? null : DocSummary._(j['redirected_from'] as Map<String, dynamic>),
-        stale = j['stale'] as bool;
+        stale = j['stale'] as bool,
+        conflict = [for (final r in (j['conflict'] as List?) ?? const []) r as String];
   final DocSummary doc;
   final bool deleted;
   final Map<String, dynamic> model;
@@ -144,6 +162,9 @@ class Opened {
 
   /// 색인이 낡아 이번에 새로 그렸다.
   final bool stale;
+
+  /// 충돌이면 머리가 아닌 다른 잎 판들 — [DocRecord.conflict]와 같다.
+  final List<String> conflict;
 }
 
 /// 본문 찾기 한 건.
@@ -213,13 +234,69 @@ class IndexStatus {
   final bool building;
 }
 
-/// 열린 서재 하나(spec/engine-api.md의 `library.*` · `doc.*` · `rev.*` · 색인 op).
+/// 내보낸 묶음(`sync.export`).
+class SyncExport {
+  SyncExport._(Map<String, dynamic> j)
+      : pack = base64.decode(j['pack'] as String),
+        seq = j['seq'] as int,
+        count = j['count'] as int,
+        more = j['more'] as bool;
+  final Uint8List pack;
+
+  /// 묶음에 든 마지막 판의 `rev.seq`.
+  final int seq;
+  final int count;
+
+  /// 상한에 닿아 남은 판이 있다 — 다음 번호로 이어서 낸다.
+  final bool more;
+}
+
+class SyncStatus {
+  SyncStatus._(Map<String, dynamic> j)
+      : library = j['library'] as String,
+        device = j['device'] as String,
+        seq = j['seq'] as int,
+        pending = j['pending'] as int,
+        held = j['held'] as int,
+        conflicts = j['conflicts'] as int;
+  final String library;
+  final String device;
+  final int seq;
+
+  /// `after_seq` 뒤에 이 기기가 만든 판 수.
+  final int pending;
+  final int held;
+
+  /// 충돌로 남은 문서 수.
+  final int conflicts;
+}
+
+class SyncApplied {
+  SyncApplied._(Map<String, dynamic> j)
+      : added = j['added'] as int,
+        skipped = j['skipped'] as int,
+        held = j['held'] as int,
+        forked = j['forked'] as int,
+        merged = j['merged'] as int,
+        conflicts = [for (final d in j['conflicts'] as List) d as String],
+        revived = [for (final d in j['revived'] as List) d as String];
+  final int added;
+  final int skipped;
+  final int held;
+  final int forked;
+  final int merged;
+  final List<String> conflicts;
+  final List<String> revived;
+}
+
+/// 열린 서재 하나(spec/engine-api.md의 `library.*` · `doc.*` · `rev.*` · 색인 op · `sync.*`).
 class Library {
-  Library._(this._core, this._handle, this.info);
+  Library._(this._core, this._handle, this._info);
 
   final HistoryCore _core;
   final int _handle;
-  final LibraryInfo info;
+  LibraryInfo _info;
+  LibraryInfo get info => _info;
 
   /// 앱 자료 폴더 [appDataDir] 아래 `HistoryCore/`에 서재를 연다(없으면 만든다). 그 폴더 바로 아래 옛 앱 파일은 건드리지 않는다.
   static Future<Library> open(HistoryCore core, String appDataDir) async {
@@ -233,8 +310,9 @@ class Library {
   Future<Saved> create(Namespace ns, String title, String body, {String message = ''}) async =>
       Saved._(await _call('doc.create', {'ns': ns.name, 'title': title, 'body': body, 'message': message}));
 
-  Future<Saved> save(String doc, String base, String body, {String message = ''}) async =>
-      Saved._(await _call('doc.save', {'doc': doc, 'base': base, 'body': body, 'message': message}));
+  /// [merge]를 주면 견주어 합친 판 — 앞 판이 [base](머리)와 [merge](충돌의 다른 잎) 둘이다.
+  Future<Saved> save(String doc, String base, String body, {String message = '', String? merge}) async =>
+      Saved._(await _call('doc.save', {'doc': doc, 'base': base, 'body': body, 'message': message, 'merge': ?merge}));
 
   Future<Renamed> rename(String doc, String base, String title, {bool keepRedirect = true, String message = ''}) async =>
       Renamed._(await _call('doc.rename', {'doc': doc, 'base': base, 'title': title, 'keep_redirect': keepRedirect, 'message': message}));
@@ -344,6 +422,28 @@ class Library {
   /// 낡은 문서를 [maxMs] 동안 고친다. 남은 수를 돌려준다 — 0이 될 때까지 뒤에서 부른다.
   Future<int> indexStep({int maxMs = 200}) async => (await _call('index.step', {'max_ms': maxMs}))['stale'] as int;
 
+  /// [afterSeq] 뒤에 이 기기가 만든 판을 묶음 [no]로 — 없으면 null(spec/drive-format.md 3절).
+  Future<SyncExport?> syncExport({required int afterSeq, required int no}) async {
+    final r = await _call('sync.export', {'after_seq': afterSeq, 'no': no});
+    return r['pack'] == null ? null : SyncExport._(r);
+  }
+
+  /// 묶음을 든다 — 판 ID로 걸러 두 번 받아도 한 번만. 다른 서재의 묶음이면 [WrongLibraryError].
+  Future<SyncApplied> syncApply(Uint8List pack) async => SyncApplied._(await _call('sync.apply', {'pack': base64.encode(pack)}));
+
+  Future<SyncStatus> syncStatus({required int afterSeq}) async => SyncStatus._(await _call('sync.status', {'after_seq': afterSeq}));
+
+  /// 드라이브의 서재 [library]에 합류한다(spec/drive-format.md 6절) — 이 기기의 문서는 그대로 남아 다음 내보내기에 모두 나간다.
+  Future<void> join(String library) async {
+    await _call('sync.join', {'library': library});
+    _info = LibraryInfo._joined(_info, library);
+  }
+
+  /// 서재 원본의 한 때 사본과 읽어보기를 ZIP 하나로 [path]에.
+  Future<void> backup(String path) async {
+    await _call('library.backup', {'path': path});
+  }
+
   Future<void> close() async {
     await _call('library.close');
   }
@@ -354,5 +454,6 @@ Map<String, dynamic> _check(Map<String, dynamic> r) {
   final message = r['error'] as String? ?? '알 수 없는 오류';
   final code = r['code'] as String?;
   if (code == 'stale_base') throw StaleBaseError(message, head: r['head'] as String);
+  if (code == 'wrong_library') throw WrongLibraryError(message, found: r['found'] as String);
   throw HistoryCoreError(message, code: code);
 }

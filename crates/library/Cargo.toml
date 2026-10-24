@@ -6,6 +6,11 @@ publish.workspace = true
 
 [dependencies]
 rusqlite = { version = "0.37", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# 자동 합치기의 줄 짝짓기 — 판에 따라 결과가 바뀌면 기기마다 다른 판이 되므로 Cargo.lock으로 고정한다(spec/drive-format.md 5-2).
+similar = "2"
 unicode-normalization = "0.1"
-uuid = { version = "1", features = ["v7"] }
+uuid = { version = "1", features = ["v5", "v7", "v8"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 zstd = "0.13"

@@ -13,13 +13,13 @@ const ZSTD_LEVEL: i32 = 3;
 const COUNTS_SQL: &str = "SELECT ns, deleted, count(*) FROM doc GROUP BY ns, deleted";
 const REV_COLUMNS: &str = "id, doc, parent, parent2, device, hlc, kind, ns, title, message, len";
 
-struct Head {
-    ns: Namespace,
-    title: String,
-    head: RevId,
-    created: Hlc,
-    updated: Hlc,
-    deleted: bool,
+pub(crate) struct Head {
+    pub(crate) ns: Namespace,
+    pub(crate) title: String,
+    pub(crate) head: RevId,
+    pub(crate) created: Hlc,
+    pub(crate) updated: Hlc,
+    pub(crate) deleted: bool,
 }
 
 struct NewRev<'a> {
@@ -33,7 +33,7 @@ struct NewRev<'a> {
     body: &'a str,
 }
 
-fn load_head(db: &Connection, doc: DocId) -> Result<Head> {
+pub(crate) fn load_head(db: &Connection, doc: DocId) -> Result<Head> {
     db.prepare_cached("SELECT ns, title, head, created, updated, deleted FROM doc WHERE id = ?1")?.query_row(params![doc], |r| {
         Ok(Head { ns: r.get(0)?, title: r.get(1)?, head: r.get(2)?, created: r.get(3)?, updated: r.get(4)?, deleted: r.get(5)? })
     })
@@ -42,7 +42,7 @@ fn load_head(db: &Connection, doc: DocId) -> Result<Head> {
 }
 
 /// 줄끝을 `\n`으로 맞춘다 — 그리기 모델의 문단 범위(UTF-16)가 저장된 본문의 위치와 맞도록(spec/namumark.md).
-fn lf(body: &str) -> Cow<'_, str> {
+pub(crate) fn lf(body: &str) -> Cow<'_, str> {
     if body.contains('\r') {
         Cow::Owned(body.replace("\r\n", "\n").replace('\r', "\n"))
     } else {
@@ -50,7 +50,7 @@ fn lf(body: &str) -> Cow<'_, str> {
     }
 }
 
-fn encode(body: &str) -> Result<Vec<u8>> {
+pub(crate) fn encode(body: &str) -> Result<Vec<u8>> {
     Ok(zstd::bulk::compress(body.as_bytes(), ZSTD_LEVEL)?)
 }
 
@@ -59,7 +59,7 @@ thread_local! {
     static UNZ: std::cell::RefCell<Option<zstd::bulk::Decompressor<'static>>> = const { std::cell::RefCell::new(None) };
 }
 
-fn decode(blob: &[u8]) -> Result<String> {
+pub(crate) fn decode(blob: &[u8]) -> Result<String> {
     let bytes = match zstd::zstd_safe::get_frame_content_size(blob) {
         Ok(Some(size)) => UNZ.with(|u| {
             let mut u = u.borrow_mut();
@@ -147,8 +147,17 @@ impl Library {
             return Err(Error::Injected);
         }
         tx.execute("UPDATE doc SET head = ?2, updated = ?3, deleted = 0 WHERE id = ?1", params![doc, rev, hlc])?;
+        let merged = crate::sync::after_local_write(&tx, doc, device)?;
         tx.commit()?;
+        self.observe(merged);
         Ok(Saved { doc, rev, hlc, changed: true })
+    }
+
+    /// 충돌 중이던 문서를 고쳐 합친 판이 생겼으면 시계를 그 뒤로.
+    fn observe(&mut self, merged: Option<Hlc>) {
+        if let Some(h) = merged {
+            self.clock.observe(h);
+        }
     }
 
     /// 한꺼번에 들이기(측정기 · 새 기기) — `batch`편마다 트랜잭션 하나, `create`와 같은 규칙(제목 정규화 · 줄끝 · 첫 판).
@@ -226,7 +235,9 @@ impl Library {
         if self.fail_after_rev {
             return Err(Error::Injected);
         }
+        let merged = crate::sync::after_local_write(&tx, doc, device)?;
         tx.commit()?;
+        self.observe(merged);
         Ok(Renamed { rev, hlc, redirect })
     }
 
@@ -246,7 +257,9 @@ impl Library {
             return Err(Error::Injected);
         }
         tx.execute("UPDATE doc SET head = ?2, updated = ?3, deleted = 1 WHERE id = ?1", params![doc, rev, hlc])?;
+        let merged = crate::sync::after_local_write(&tx, doc, device)?;
         tx.commit()?;
+        self.observe(merged);
         Ok(Saved { doc, rev, hlc, changed: true })
     }
 

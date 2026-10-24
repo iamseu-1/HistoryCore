@@ -61,6 +61,13 @@ impl Clock {
         next
     }
 
+    /// 받은 판의 시각을 본다 — 그보다 앞서 있지 않으면 시계를 그 뒤로 옮긴다(HLC 받기 규칙).
+    pub fn observe(&mut self, seen: Hlc) {
+        if seen > self.last {
+            self.last = seen;
+        }
+    }
+
     pub fn last(&self) -> Hlc {
         self.last
     }

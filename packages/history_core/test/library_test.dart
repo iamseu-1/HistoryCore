@@ -133,4 +133,41 @@ void main() {
     expect(await lib.indexStep(), 0);
     await lib.close();
   }, skip: windowsOnly);
+
+  test('동기화 — 합류 · 묶음 주고받기 · 충돌을 견주어 합침 · 내보내기', () async {
+    final other = Directory.systemTemp.createTempSync('서재 다리 시험 나 ');
+    final a = await Library.open(core, dir.path);
+    final b = await Library.open(core, other.path);
+    expect(b.info.library, isNot(a.info.library));
+    await b.join(a.info.library);
+    expect(b.info.library, a.info.library);
+    final s = await a.create(Namespace.doc, '임진왜란', '첫 줄\n둘째 줄\n');
+    final status = await a.syncStatus(afterSeq: 0);
+    expect((status.pending, status.held, status.conflicts, status.device), (1, 0, 0, a.info.device));
+    final first = (await a.syncExport(afterSeq: 0, no: 1))!;
+    expect((first.count, first.more), (1, false));
+    expect((await b.syncApply(first.pack)).added, 1);
+    expect(await b.syncExport(afterSeq: 0, no: 1), isNull);
+    await a.save(s.doc, s.rev, '첫 줄\n가\n');
+    await b.save(s.doc, s.rev, '첫 줄\n나\n');
+    final fromB = (await b.syncExport(afterSeq: 0, no: 1))!;
+    final r = await a.syncApply(fromB.pack);
+    expect(r.conflicts, [s.doc]);
+    final d = (await a.get(s.doc))!;
+    expect(d.conflict, hasLength(1));
+    expect((await a.openDoc(s.doc))!.conflict, d.conflict);
+    await a.save(s.doc, d.head, '첫 줄\n가나\n', merge: d.conflict.single);
+    expect((await a.get(s.doc))!.conflict, isEmpty);
+    expect((await a.syncStatus(afterSeq: 0)).conflicts, 0);
+    await expectLater(b.syncApply(first.pack..[0] ^= 0xff), throwsA(isA<HistoryCoreError>().having((e) => e.code, 'code', 'bad_pack')));
+    final stranger = Directory.systemTemp.createTempSync('서재 다리 시험 남 ');
+    final c = await Library.open(core, stranger.path);
+    await expectLater(c.syncApply(fromB.pack), throwsA(isA<WrongLibraryError>().having((e) => e.found, 'found', a.info.library)));
+    final zip = File('${other.path}${Platform.pathSeparator}내보내기.zip');
+    await b.backup(zip.path);
+    expect(zip.lengthSync(), greaterThan(100));
+    for (final lib in [a, b, c]) {
+      await lib.close();
+    }
+  }, skip: windowsOnly);
 }

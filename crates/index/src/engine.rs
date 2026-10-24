@@ -6,7 +6,7 @@ use crate::stats::{bump_new, bump_ns, bump_source, bump_years, count_edits, Home
 use crate::store::{meta_i64, set_meta, Index};
 use crate::search::{fts_match, parse_query, snippet, verify, SHARDS, SHARD_TABLES};
 use crate::tree::{summary_row, Children, Tree};
-use history_library::{Doc, DocId, DocSummary, Error, Hlc, Library, Namespace, RevId, Renamed, Result, Saved, WallClock};
+use history_library::{Applied, Doc, DocId, DocSummary, Error, Hlc, Library, LibraryId, Namespace, RevId, Renamed, Result, Saved, WallClock};
 use history_namumark::{plain_document, render, render_document, ObjectRef, RenderOptions, Templates};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::cell::RefCell;
@@ -559,6 +559,30 @@ impl Engine {
             self.after_write(before, &[doc]);
         }
         Ok(s)
+    }
+
+    /// 묶음을 든다(spec/drive-format.md 4절) — 판이 든 문서는 `doc.*`처럼 같은 호출에서 색인한다.
+    pub fn apply(&mut self, pack: &[u8]) -> Result<Applied> {
+        let before = self.lib.last_seq()?;
+        let r = self.lib.apply(pack)?;
+        if !r.touched.is_empty() {
+            self.after_write(before, &r.touched);
+        }
+        Ok(r)
+    }
+
+    pub fn save_merge(&mut self, doc: DocId, base: RevId, merge: RevId, body: &str, message: &str) -> Result<Saved> {
+        let before = self.lib.last_seq()?;
+        let s = self.lib.save_merge(doc, base, merge, body, message)?;
+        self.after_write(before, &[doc]);
+        Ok(s)
+    }
+
+    /// 드라이브의 서재에 합류한다 — 색인의 서재 ID도 바꾼다. 안 그러면 다음 열기에서 다른 서재의 색인으로 보여 통째로 다시 짓는다.
+    pub fn join(&mut self, library: LibraryId) -> Result<()> {
+        self.lib.join(library)?;
+        self.idx.db.execute("UPDATE meta SET value = ?1 WHERE key = 'library'", [library.to_string()])?;
+        Ok(())
     }
 
     /// 서재 커밋 뒤 그 문서들을 색인한다. 실패해도 서재 저장은 그대로다 — 문서는 낡음으로 남고 `step`이 다시 한다.

@@ -215,6 +215,7 @@ impl Library {
         if tables == 0 {
             create_schema(&db)?;
         }
+        db.execute_batch(crate::sync::SYNC_SCHEMA)?;
         let info = LibraryInfo {
             library: meta_id(&db, "library", LibraryId::parse)?,
             device: meta_id(&db, "device", DeviceId::parse)?,

@@ -11,6 +11,7 @@ pub mod hlc;
 pub mod ids;
 pub mod ns;
 pub mod store;
+mod sync;
 pub mod title;
 
 pub use error::{Error, Result};
@@ -19,6 +20,7 @@ pub use ids::{DeviceId, DocId, LibraryId, RevId};
 pub use ns::{Namespace, RESERVED_PREFIXES};
 pub use title::{normalize_title, MAX_TITLE_CHARS};
 pub use docs::Reader;
+pub use sync::{Applied, Exported, SyncStatus};
 pub use store::{Counts, Doc, DocSummary, Library, LibraryInfo, NewDoc, RevInfo, RevKind, Renamed, Revision, Saved, FILE, FOLDER, FORMAT};
 
 #[cfg(test)]

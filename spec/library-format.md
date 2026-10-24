@@ -28,7 +28,10 @@
 | `meta` | `key` · `value` | `library`(서재 UUID) · `device`(이 기기 UUID) · `format`(`1`) |
 | `doc` | `id` · `ns` · `title` · `head` · `created` · `updated` · `deleted` | 문서마다 한 줄 — 지금 제목과 머리 판. 같은 이름공간 · 같은 제목이 둘일 수 있다(설계 6-4) |
 | `rev` | `seq` · `id` · `doc` · `parent` · `parent2` · `device` · `hlc` · `kind` · `ns` · `title` · `message` · `len` · `body` | 판마다 한 줄. 지우지 않는다. `body`는 맨 끝 열(긴 값이 다른 열 읽기를 막지 않게) |
+| `held` | `id` · `rev` | 앞 판이 아직 없어 보류한 받은 판(묶음 속 모양 JSON). spec/drive-format.md 4절 |
+| `conflict` | `doc` | 충돌로 남은 문서. spec/drive-format.md 5절 |
 
+- `held` · `conflict`는 P4-2에서 더했다 — 열 때 `CREATE TABLE IF NOT EXISTS`로 만들고 형식 판은 1 그대로(그 전 엔진에는 모르는 표일 뿐).
 - 색인: `doc(ns, title, created)`(제목으로 찾기) · `doc(ns, deleted)`(문서 수 — 켤 때마다 센다) · `rev(doc, hlc)`(판 기록) · `rev(hlc)`(열 때 시계를 잇는 마지막 판).
 - ID(`doc.id` · `doc.head` · `rev.id` · `rev.doc` · `rev.parent*` · `rev.device`)는 UUIDv7 16바이트 BLOB.
 - `ns`: 0 문서 · 1 분류 · 2 틀 · 3 파일 · 4 대문.
