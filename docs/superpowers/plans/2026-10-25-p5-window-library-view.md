@@ -121,7 +121,7 @@ DocContext DocContext.copyWith({...});            // 뛰는 자리(anchors)는 �
 3. **색인 판 문서가 낡음** — `spec/library-format.md` 「색인」은 `user_version` = 1이라 적었지만 코드(`crates/index/src/store.rs`의 `FORMAT`)는 2다. 걸음 2에서 문서를 고친다(창구가 판으로 거절하는 기준이라). → **고침**(걸음 2 — 2로 적고, 창구는 맞지 않으면 「색인 없음」으로 다룬다는 줄과 「읽기 전용 열기」 절을 더함).
 4. **모델 글 그대로** — `window.doc`의 `model`은 `doc.open`처럼 풀지 않고 끼운다(`Reply::WithModel`) — 깊게 중첩된 모델(P2-2 미룬 것).
 5. **`library_view` 옮기기와 아카이브 화면** — 토큰 · 아이콘 · 글꼴을 옮기면서 그림이 한 픽셀도 바뀌지 않아야 한다(검사기 · 위젯 검사 · 스크린숏). 옮기는 동안 아카이브는 `lib/src/view`의 옮긴 파일을 지우고 패키지를 import(걸음 5).
-6. **두 가지가 함께 간다** — 아카이브 `remake-7-link`는 이 가지의 엔진 · 패키지를 기대한다. 아카이브 CI는 `HISTORYCORE_REF`(= `main`)의 HistoryCore로 지으므로, **합칠 때는 HistoryCore를 먼저** main에 넣어야 아카이브 CI가 초록이다(감독).
+6. **두 가지가 함께 간다** — 아카이브 `remake-7-link`는 이 가지의 엔진 · 패키지를 기대한다. 아카이브 CI는 `HISTORYCORE_REF`(= `main`)의 HistoryCore로 지으므로, **합칠 때는 HistoryCore를 먼저** main에 넣어야 아카이브 CI가 초록이다(감독). 다만 이 가지를 넣으면 아카이브 main은 깨진다 — 알게 된 것 24.
 7. **작업 폴더의 정션** — 아카이브의 `path: ../HistoryCore/...`와 `peek_test`의 `Directory.current.parent\HistoryCore`가 작업 폴더 안에서는 `C:/claude/HistoryArchive/.claude/worktrees/HistoryCore`를 가리킨다 — 그 자리에 이 작업 폴더로 가는 디렉터리 정션을 두었다(`mklink /J`). `pubspec_overrides`는 쓰지 않는다(절대 경로가 `pubspec.lock`에 들어감). 치울 때는 `cmd /c rmdir`(`/s` 없이 — 정션만 지움).
 
 ### 걸음 2에서 알게 된 것
@@ -152,6 +152,11 @@ DocContext DocContext.copyWith({...});            // 뛰는 자리(anchors)는 �
 21. **위젯 검사의 화면 밖** — `find.*`는 기본이 `skipOffstage: true`라, 게으른 목록이 미리 지은(화면 밖 · `cacheExtent` 안) 블록을 찾지 못한다. 문서 전부를 보는 검사는 `ArchiveScroll.cacheExtent`를 크게 하고 `skipOffstage: false`(그리고 `find.descendant`의 `matching` 찾기에도)를 준다. 아직 지어지지 않은 각주 위첨자는 `scrollUntilVisible`로 찾는다.
 22. **CI는 제 일(job)** — `library_view`는 엔진을 짓지 않는 따로 된 일 `library_view`(windows-2025 · pwsh)에서 `pub get` · `analyze` · `test`를 돈다. `ci_workflow_test`가 그 일이 있고 엔진 짓기 · cargo가 없음을 본다(일을 빼면 빨갛다).
 23. **R7은 하지 않았다** — `history_core` 판은 0.0.1 그대로(감독 결정을 기다림 — 올리면 아카이브 `pubspec.lock`의 판 줄이 함께 바뀐다). `library_view`만 0.1.0 · CHANGELOG. 태그는 감독.
+
+### 걸음 5(아카이브)에서 알게 된 것
+
+24. **새 공개 이름이 받는 앱과 겹쳤다** — 걸음 3이 `history_core`에 낸 `windowApiVersion`이 아카이브 `window_place.dart`의 같은 이름 상수와 부딪혀, 아카이브의 `boot.dart` · `peek.dart`(둘 다 `history_core`를 통째로 가져옴)가 지어지지 않았다(검사 파일 넷이 못 돎). 아카이브 `remake-7-link`가 제 상수를 지우고 `history_core`의 것을 가져와 다시 내어 풀었다(아카이브 `9ae7700`). **그래서 이 가지를 main에 넣으면 아카이브 main(`9ae7700` 전)은 `HISTORYCORE_REF` = `main`으로 지어지지 않는다** — 곧이어 아카이브 `remake-7-link`를 합치거나, 그 사이 아카이브 main의 `HISTORYCORE_REF`를 `8c7a7ba`에 묶는다(감독 — 아카이브 계획 「합칠 때 확인」). 앞으로 `history_core` · `library_view`에 공개 이름을 더할 때는 받는 앱의 같은 이름을 먼저 찾아본다.
+25. **아카이브가 패키지로 옮겨 감** — 아카이브 걸음 5(`900e529`)가 옮긴 view 11 · ui 7을 지우고 `package:library_view`를 쓴다. 스크린숏 46장과 쌍둥이 HTML이 바꾸기 전과 바이트까지 같고(검사기 view FAIL 0), `HanjaCardView(missing: '표본 자전에 없는 글자')`를 넣었다(알게 된 것 18).
 
 ## 진행(걸음 표시)
 
