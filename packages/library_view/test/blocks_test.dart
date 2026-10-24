@@ -370,6 +370,17 @@ void main() {
     expect(painter.toSvg(const Size(1048, 78)), contains('#cf4f35'));
   });
 
+  testWidgets('연표 띠 머리 — 범위의 해는 서기 0년이 없는 셈이라 음수는 「기원전 n」, 범위가 없으면 「연표」만', (t) async {
+    expect(stripRangeText((-57, -18)), '기원전 57–기원전 18');
+    expect(stripRangeText((-620, 1)), '기원전 620–1');
+    await _pump(t, [const TimelineStripBlock('k/mist', '-57..-18')], DocContext());
+    expect(find.text('연표 · 기원전 57–기원전 18'), findsOneWidget);
+    expect(find.textContaining('-57'), findsNothing);
+    await _pump(t, [const TimelineStripBlock('k/mist', null)], DocContext(stripMissing: '이 연표에 없는 항목입니다.'));
+    expect(find.text('연표'), findsOneWidget);
+    expect(find.text('이 연표에 없는 항목입니다.'), findsOneWidget);
+  });
+
   testWidgets('5,000 문단 문서도 보이는 블록만 짓는다', (t) async {
     final blocks = [
       for (var i = 0; i < 5000; i++) ParaBlock([TextInline('문단 $i')]),

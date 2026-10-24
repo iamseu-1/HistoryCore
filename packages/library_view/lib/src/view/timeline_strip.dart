@@ -47,7 +47,17 @@ class StripEvent {
   return m == null ? null : (int.parse(m.group(1)!), int.parse(m.group(2)!));
 }
 
+/// 띠 머리의 범위 글 — 범위의 해는 서기 0년이 없는 셈(spec/namumark.md · spec/windows-api.md 5절)이라 음수는 「기원전 n」.
+/// (1592, 1598) → 「1592–1598」, (−57, −18) → 「기원전 57–기원전 18」.
+String stripRangeText((int, int) range) {
+  String year(int y) => y < 0 ? '기원전 ${-y}' : '$y';
+  return '${year(range.$1)}–${year(range.$2)}';
+}
+
 const stripHeight = 78.0;
+
+/// 해마다 가는 칸을 긋는 해 수의 한도 — 넘으면 눈금 글 자리에만 긋는다.
+const stripYearLinesMost = 40;
 
 /// 띠 한 장의 그림 — 폭 [width]에 맞춰 짓는다(폰에서 글자가 줄지 않게). 해마다 가는 칸, 시대 띠, 사건 점(주홍, R7), 두 해마다 눈금.
 SvgScene stripScene(TimelineStripData d, double width) {
@@ -66,8 +76,11 @@ SvgScene stripScene(TimelineStripData d, double width) {
 
   final shapes = <SvgShape>[];
   final years = [for (var y = d.from.ceil(); y <= d.to.floor(); y++) y];
-  for (final y in years) {
-    shapes.add(SvgPath('M${x(y.toDouble()).toStringAsFixed(1)} 0v56', stroke: const SvgInk(Ink.rule), strokeWidth: 1));
+  // 눈금 글은 여덟 해가 넘으면 네 개쯤. 가는 칸은 해마다 — 해가 [stripYearLinesMost]를 넘으면(수백 해 띠) 눈금 글 자리에만(회색 덩어리가 되지 않게).
+  final step = years.length > 8 ? (years.length / 4).ceil() : 2;
+  final lineStep = years.length > stripYearLinesMost ? step : 1;
+  for (final (i, y) in years.indexed) {
+    if (i % lineStep == 0) shapes.add(SvgPath('M${x(y.toDouble()).toStringAsFixed(1)} 0v56', stroke: const SvgInk(Ink.rule), strokeWidth: 1));
   }
   for (final s in d.spans) {
     final a = x(s.from), b = x(s.to);
@@ -88,7 +101,6 @@ SvgScene stripScene(TimelineStripData d, double width) {
       shapes.add(SvgText(cx - 6, 56, e.label, fill: const SvgInk(Ink.ink2)));
     }
   }
-  final step = years.length > 8 ? (years.length / 4).ceil() : 2;
   for (final (i, y) in years.indexed) {
     if (i % step == 0) shapes.add(SvgText(x(y.toDouble()), 74, d.yearLabel?.call(y) ?? '$y', fill: const SvgInk(Ink.muted)));
   }
@@ -132,7 +144,7 @@ class _TimelineStripViewState extends State<TimelineStripView> {
   @override
   Widget build(BuildContext context) {
     final range = parseRange(widget.block.range);
-    final label = range == null ? '연표' : '연표 · ${range.$1}–${range.$2}';
+    final label = range == null ? '연표' : '연표 · ${stripRangeText(range)}';
     return DomTag(
       'figure',
       attrs: const {'class': 'timeline'},
