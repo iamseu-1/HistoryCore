@@ -174,6 +174,16 @@ DocContext DocContext.copyWith({...});            // 뛰는 자리(anchors)는 �
 31. **HistoryTime 임시 길과 같은 답** — 아카이브 `test/tool/shelf_cross_test.dart`가 연표 링크가 든 작은 서재에서 `window.docs_for_entity`(다리 op 그대로)와 HistoryTime `shelf.docs`(`archive-tool query`)를 견줘 `id` · `ns` · `title` · `updated` · 차례 · 맞춘 `entity`가 같았다(꺼진 서재 · 쓰는 엔진이 연 채로). 일부러 다른 곳은 spec 9절에 적었다: 자리 꼬리(임시 길만 뗌) · 색인 없음(`found: false` ↔ `no_index`).
 32. **틀로 들인 연표 링크는 항목 색인에 없다** — `timeline_entities`는 펼치기 전 문서를 보므로 `[include(틀:연표 틀, 항목=X)]`의 `[[연표:@항목@]]`은 X로 뽑히지 않는다. 두 길이 같은 색인을 읽어 같은 답이고 spec 8절에 적었다. 틀로만 잇는 문서(표본 서재의 「전쟁 정보」 틀 `연표=` 인자처럼)를 「서재 문서」에 넣을지는 넘길 것 — 넣으려면 색인이 펼친 모델에서 뽑아야 하고 틀 저장 때 다시 색인(`uses` · `stale`)이 함께 따라야 한다.
 
+### 걸음 9(마무리)에서 알게 된 것
+
+33. **최종 검토 — 새 검토자 한 번** — 앞 걸음(1 ~ 8)을 하지 않은 새 작업자가 두 저장소의 `main..remake-7-link`를 한 번에 봤다(이 환경에는 따로 된 검토자를 띄우는 도구가 없어, 마무리 작업자가 코드 검토 기술 — 높은 단계 · 여덟 갈래 — 로). 집중: 엄격한 읽기 전용 · dll 사본 · 판 불일치 · 쓰기 거절 · 레지스트리. **Critical 0 · Important 1 · Minor 5.**
+    - **I1(아카이브 몫 — 고침)**: 연표 엔진 dll의 사본을 두지 못하거나 싣지 못하면(HistoryTime 업데이트 도중 — 원본이 잠깐 없음 · 잠김 · 반쯤 쓴 파일) 그 실행 내내 연표 창구가 꺼졌다. → 그 물음만 빠지고 원본이 바뀌면 다시 본다(아카이브 `timeline_window.dart`의 `TimelineState.engineDown` · 검사 둘을 먼저 쓰고 빨강 확인). `spec/windows-api.md` 3-2의 3에 적었다.
+    - 이 저장소 몫 Minor(미룸): ① Dart `WindowDocSummary` · `WindowHit`가 `Namespace.values.byName`으로 `ns`를 읽어, 엔진이 이름공간을 더하면 그 줄 하나 때문에 답 전체가 던진다(그 줄만 건너뛰는 편이 spec 1절 「더하는 것은 판 그대로」와 맞음). ② `with_window`가 손잡이 표 잠금을 쥔 채 파일을 읽는다(바쁨 기다림 2초까지) — `with_engine`과 같은 꼴이라 새로 생긴 것은 아니나, G11 뒤 아카이브 안 provider가 `window.*`를 물으면 같은 프로세스의 쓰는 op가 그동안 줄을 선다.
+    - 아카이브 몫 Minor(미룸): 연표 자리를 켤 때 한 번만 읽음(`spec/windows-api.md` 6-2에 한계로 적음) · 사본 지문 확인과 싣기 사이의 틈(같은 사용자) · 물음마다 받아 둔 답 256개를 일꾼에 복사.
+    - 쓰기 거절은 빠진 길이 없었다 — 손잡이를 받는 op는 모두 `with_engine`(읽기 전용 번호면 `read_only`) 또는 `with_window`를 지나고, `namumark.parse {handle}` · `doc.open`도 막힌다. 읽기 전용 연결은 닫을 때 체크포인트하지 않는다(SQLite가 읽기 전용 WAL의 체크포인트를 거절 — 검사 `read_only.rs`가 바이트로 봄).
+34. **넓은 검사** — `CARGO_BUILD_JOBS=4 cargo test --locked --workspace` 238 통과 · 실패 0, `cargo test --locked --release -p history_namumark --test hardening --test model` 10 · 13 통과, `cargo clippy --workspace --all-targets` — 이 가지가 고친 파일의 경고 0(남은 9개는 건드리지 않은 `rebuild.rs` · `corpus` · `bench` · 옛 검사 파일). `packages/library_view` `flutter analyze` 문제 없음 · `flutter test` 47 통과, `packages/history_core` `flutter analyze` 문제 없음 · `flutter test` 22 통과(창구 검사 5 포함 — 걸음 3의 dll).
+35. **넘길 것(HistoryCore)** — ① 통째 짓기의 바꿔 끼우기를 몇 번 다시 해 보기(`rebuild.rs` — 창구 질의 몇 ms와 겹치면 Windows에서 지우기 실패, 까다로운 곳 8). ② 틀로 들인 연표 링크를 항목 색인에 넣을지(알게 된 것 32). ③ `window.hanja`(P2-4 `hanja.*` 뒤). ④ Android `.so`는 CI(R9). ⑤ R7 — `history_core` 0.1.0으로 함께 올릴지 · 태그 이름은 감독.
+
 ## 진행(걸음 표시)
 
 전체 걸음은 두 저장소에 걸친 아홉이다. 이 저장소가 맡는 걸음은 1 · 2 · 3 · 4 · 8 · 9(5 · 6 · 7은 아카이브).
@@ -185,4 +195,4 @@ DocContext DocContext.copyWith({...});            // 뛰는 자리(anchors)는 �
 | 3 | 다리 op · Dart `LibraryWindow` · 엔진 dll 짓기(`tools/build-native.ps1`) · `spec/engine-api.md` 예정 → 됨 | **끝**(2026-10-25 — 새 검사 `crates/ffi/tests/window.rs` 6 · `packages/history_core/test/window_test.dart` 5, dll `packages/history_core/native/windows-x64/history_core.dll`(git 밖) — 아카이브 걸음 5 ~ 8이 정션으로 씀) |
 | 4 | `packages/library_view` 0.1.0(R6 · R7 · R8) · `history_core` 0.1.0 | **끝**(2026-10-25 — `library_view` 0.1.0 · CHANGELOG · README(글꼴 이름) · CI 일 `library_view`, 패키지 검사 44(옮긴 `blocks_test` 18 · `model_test` 5 + 새 `doc_view_test` 13 · `hanja_card_test` 5 · `package_test` 3) · `ci_workflow_test` 3 통과. `history_core` 0.1.0은 감독 결정 기다림(알게 된 것 23)) |
 | 8 | 함께 시험: 아카이브 작은 앱이 읽기 전용으로 peek · HistoryTime 임시 길(`shelf.docs`)과 같은 답인지 교차 확인 · 릴리스 빌드 | **끝**(2026-10-25 — 아카이브 쪽 몫(아카이브 계획 걸음 8): peek가 `LibraryWindow`로 · 교차 확인 `shelf_cross_test` 같은 답 · 아카이브 릴리스 빌드와 연기 시험 `-TimelinePlace` 통과. 이 저장소는 `spec/windows-api.md`(0절 상태 · 2-4 작은 앱 줄 · 8절 틀로 들인 링크 · 9절 교차 확인)와 이 계획만 고침 — 알게 된 것 30 ~ 32) |
-| 9 | 마무리: 새 검토자 · 넓은 검사(`cargo test --locked --workspace` · `clippy` · `flutter test` 두 패키지) · 보고 · 인수인계 · 넘길 것 | 기다림 |
+| 9 | 마무리: 새 검토자 · 넓은 검사(`cargo test --locked --workspace` · `clippy` · `flutter test` 두 패키지) · 보고 · 인수인계 · 넘길 것 | **끝**(2026-10-25 — 최종 검토 Critical 0 · Important 1(아카이브 몫, 고침) · Minor 5(미룸) · 넓은 검사 모두 통과 · 인수인계 `docs/superpowers/handoff/2026-10-25-p5-window-handoff.md` · 아카이브 보고 `HistoryArchive/docs/superpowers/reports/2026-10-25-p5-2.md` — 알게 된 것 33 ~ 35. **main 합치기 · 태그 전**) |

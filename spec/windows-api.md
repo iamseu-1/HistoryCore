@@ -17,7 +17,7 @@
 | 서재 창구의 질의(HistoryCore 읽기 전용 열기 + `window.*`) | **됨** — HistoryCore 가지 `remake-7-link`(엔진 · 다리 op · Dart `LibraryWindow`, main 합치기 전 — 계획 `docs/superpowers/plans/2026-10-25-p5-window-library-view.md`) |
 | 서재 문서 그리기(`packages/library_view`) | **됨** — HistoryCore 가지 `remake-7-link`(판 0.1.0, 태그 전 — `LibraryDocView` · `HanjaCardView` · `kangxiUri`, 패키지 README) |
 | 연표 창구(HistoryTime 엔진 `window.*` · `HKCU\Software\HistoryTime` · `historytime` 등록) | **됨** — HistoryTime 가지 `remake-7`(`de5f1f9`, 그 저장소 main 합치기 전) |
-| 연표 창구를 읽는 쪽(아카이브) | **됨** — 아카이브 가지 `remake-7-link`(P5-2 — 걸음 6 클라이언트: 자리 읽기 `RegGetValueW` · dll 사본 · 허락 목록 · 한 줄 차례 · `data_version` 받아 둔 답, 걸음 7 화면: 문서 속 띠 · 오늘의 역사 · `[[연표:` 찾기, 걸음 8 함께 시험: 릴리스 앱 연기 시험 `-TimelinePlace` — 계획 `docs/superpowers/plans/2026-10-25-p5-2-timeline-window.md`) |
+| 연표 창구를 읽는 쪽(아카이브) | **됨** — 아카이브 가지 `remake-7-link`(P5-2 — 걸음 6 클라이언트: 자리 읽기 `RegGetValueW` · dll 사본 · 허락 목록 · 한 줄 차례 · `data_version` 받아 둔 답, 걸음 7 화면: 문서 속 띠 · 오늘의 역사 · `[[연표:` 찾기, 걸음 8 함께 시험: 릴리스 앱 연기 시험 `-TimelinePlace`, 걸음 9 최종 검토: dll을 두지 · 싣지 못하면 그 물음만 빠짐 — 계획 `docs/superpowers/plans/2026-10-25-p5-2-timeline-window.md`) |
 | 딥링크 받기 | **됨** — 아카이브(P5-1) · HistoryTime(Windows · 안드로이드는 코드만) |
 | Android 창구(ContentProvider) | **예정** — 서명 키(G11) 뒤. 아카이브는 `version`만 답하는 뼈대(P5-1) |
 
@@ -97,7 +97,7 @@ Android는 7절의 provider로 읽는다(예정).
 
 1. 자리(2-4)에서 `Store` · `ApiVersion` · `Engine`을 얻는다. 판이 크거나, 값 하나라도 없거나, `Store` · `Engine` 파일이 없으면 끈다.
 2. **일지가 남은 저장소는 열지 않는다** — `<Store>-journal`이 있으면(연표 앱이 쓰는 중이거나 쓰다가 죽음) 이번에는 끈다. 열면 HistoryTime 엔진(`Store::open`의 일지 되돌림)이 쓰기 연결로 되돌림을 해 저장소 파일이 바뀔 수 있다.
-3. **dll은 사본을 싣는다** — `Engine` 파일을 읽는 앱의 임시 폴더로 복사해 그 사본을 싣는다(사본 이름에 원본의 크기 · 고친 때 같은 지문을 넣어, 원본이 바뀌면 새 사본 — 아카이브는 `archive_engine-<크기>-<고친 때 ms>-<SHA-256 앞 16자>.dll`). 실린 dll은 Windows가 잠가(이름은 바꿀 수 있으나 지우거나 덮어쓰지 못함), 원본을 실으면 HistoryTime 업데이트(설치기 · 포터블 덮어쓰기)가 막힌다.
+3. **dll은 사본을 싣는다** — `Engine` 파일을 읽는 앱의 임시 폴더로 복사해 그 사본을 싣는다(사본 이름에 원본의 크기 · 고친 때 같은 지문을 넣어, 원본이 바뀌면 새 사본 — 아카이브는 `archive_engine-<크기>-<고친 때 ms>-<SHA-256 앞 16자>.dll`). 실린 dll은 Windows가 잠가(이름은 바꿀 수 있으나 지우거나 덮어쓰지 못함), 원본을 실으면 HistoryTime 업데이트(설치기 · 포터블 덮어쓰기)가 막힌다. 업데이트 도중(원본이 잠깐 없거나 · 잠겼거나 · 반쯤 쓴 파일)에 물으면 사본을 두지 못하거나 싣지 못할 수 있다 — **그 물음만 빠지고**, 원본이 잠깐 없으면 둔 사본을 그대로 쓰며, 싣지 못한 원본은 바뀔 때(업데이트를 마침) 다시 본다. 그 실행 내내 끄는 것은 판이 클 때뿐이다(아카이브 P5-2 최종 검토).
 4. 부르는 함수는 `archive_call`(UTF-8 JSON 요청 → 답 글)과 `archive_free`(답을 놓음) 둘뿐이다. 다른 내보낸 함수(`archive_import` · `archive_tile` 등)는 부르지 않는다.
 5. **허락된 op만 보낸다** — `open` · `close` · `window.version` · `window.entity` · `window.entities_on_date` · `window.search_entities` · `window.strip` · `window.spans`. 그 밖(`apply` · `add_pack` · `remove_pack` · `window.locate` · `window.ids` · 다른 조회)은 읽는 쪽이 보내기 전에 거른다.
 6. **물을 때 열고 곧 놓는다** — `{"op": "open", "path": <Store>}` → `window.*` 몇 → `{"op": "close"}`. 연 채로 두지 않는다 — 연표 앱의 쓰기(DLC 넣고 빼기)는 열린 읽기 거래가 끝나기를 5초까지 기다린다.
@@ -204,6 +204,7 @@ Windows에서 링크를 받으면: 둘째 실행(명령줄에 링크)은 같은 
 
 - **아카이브가 보내는 꼴**: 항목은 `Uri(scheme: 'historytime', host: 'entity', pathSegments: [<항목ID>])`(`/`는 `%2F`) — 문서 속 연표 링크 · 「연표에서 보기」. 날짜는 `historytime://date/<월>-<일>`(앞의 0 없이, 예 `historytime://date/10-21`) — 대문 '오늘의 역사' 머리의 「연표에서 이 날」(보는 날). 받을 앱이 없으면 누른 자리에 「HistoryTime이 없습니다」. HistoryTime이 버릴 항목ID(빈 것 · 제어 문자 · 512자 넘음, 퍼센트로 적은 링크가 2,048자 넘음 — 한글이면 225자까지)는 보내지 않고 그 까닭을 보인다(아카이브 P5-2 걸음 7 — 받는 쪽 규칙을 옮긴 거울로 시험).
 - 늦게 온 링크가 이긴다. 여러 저장소 창이 켜져 있으면 창구 자리 `Store`를 가장 늦게 적은 보통 창이 받는다 — 그래서 아카이브가 읽은 저장소와 링크가 여는 저장소가 같다(HistoryTime 계약 1-2 '여러 저장소 창일 때의 규칙').
+  - **지금 아카이브의 한계**(P5-2 — 미룬 것): 아카이브는 켤 때 자리(`Store` · `ApiVersion` · `Engine`)를 한 번 읽는다. 그 뒤 HistoryTime이 다른 저장소를 열거나 처음 설치 · 실행되면, 아카이브를 다시 켤 때까지 옛 저장소를 읽거나(링크는 새 저장소 창이 받음) 연표 창구가 없다. 물음마다 자리를 다시 읽는 것(`RegGetValueW` 셋 — 값쌈)이 고칠 길이다.
 
 ## 7. Android 이름 (예정 — 서명 키 G11 뒤)
 
