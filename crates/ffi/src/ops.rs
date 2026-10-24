@@ -1,7 +1,8 @@
-//! 서재 일의 다리 — `library.*` · `doc.*` · `rev.*` · 색인 op · `sync.*`(spec/engine-api.md). 열린 서재(엔진 = 서재 + 색인)는 손잡이 표에 든다.
-use history_index::{Children, Engine, Hit, HomeOptions, LibraryTemplates, Opened, Wanted};
+//! 서재 일의 다리 — `library.*` · `doc.*` · `rev.*` · 색인 op · `sync.*` · 서재 창구 `window.*`(spec/engine-api.md · spec/windows-api.md).
+//! 열린 서재(엔진 = 서재 + 색인)와 읽기 전용으로 연 서재(창구 `Window`)는 손잡이 표에 따로 든다 — 번호는 함께 센다.
+use history_index::{Children, Engine, Hit, HomeOptions, LibraryTemplates, Opened, Wanted, Window, WindowDoc};
 use base64::Engine as _;
-use history_library::{Applied, Counts, Doc, DocId, DocSummary, Error, Hlc, Library, LibraryId, Namespace, RevId, RevInfo, Saved};
+use history_library::{Applied, Counts, Doc, DocId, DocSummary, Error, Hlc, LibraryId, LibraryInfo, Namespace, RevId, RevInfo, Saved};
 use history_namumark::{render, NoTemplates, RenderOptions};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -11,6 +12,11 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 struct Open {
     next: u64,
     libraries: HashMap<u64, Engine>,
+    /// 읽기 전용 손잡이(spec/windows-api.md 3-1) — `window.*` · `library.close`만 받는다. 쓰는 길이 없는 형이라 쓰지 못한다(계획 R2).
+    windows: HashMap<u64, Window>,
+    /// 보통 손잡이로 `window.*`를 물을 때의 창구 — 그 손잡이 번호로, 처음 물을 때 만든다. 쓰는 엔진 곁에서 따로 읽기 전용으로 읽으므로
+    /// 두 손잡이의 답이 같다(낡은 모델을 그려도 색인에 굳혀 넣지 않는다).
+    views: HashMap<u64, Window>,
 }
 
 /// 답 — 보통은 JSON 값, `doc.open`은 그리기 모델 글을 풀지 않고 끼운다.
@@ -22,7 +28,7 @@ pub enum Reply {
 fn table() -> MutexGuard<'static, Open> {
     static TABLE: OnceLock<Mutex<Open>> = OnceLock::new();
     TABLE
-        .get_or_init(|| Mutex::new(Open { next: 1, libraries: HashMap::new() }))
+        .get_or_init(|| Mutex::new(Open { next: 1, libraries: HashMap::new(), windows: HashMap::new(), views: HashMap::new() }))
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
@@ -33,17 +39,23 @@ const LIBRARY_OPS: [&str; 9] = ["library.counts", "doc.create", "doc.save", "doc
 const SYNC_OPS: [&str; 6] = ["sync.export", "sync.apply", "sync.status", "sync.join", "sync.rotate", "library.backup"];
 const INDEX_OPS: [&str; 11] =
     ["titles.exist", "search.titles", "search.body", "tree.children", "links.back", "links.wanted", "home.aggregates", "stats.library", "timeline.docs", "index.status", "index.step"];
+const WINDOW_OPS: [&str; 6] = ["window.version", "window.doc", "window.doc_by_title", "window.docs_for_entity", "window.titles_exist", "window.search"];
 
 /// 서재 op면 답을, 아니면 None(모르는 op).
 pub fn handle_op(op: &str, req: &Value) -> Option<Reply> {
     let answer = match op {
-        "library.open" => open(req),
+        "library.open" => match req.get("read_only") {
+            None | Some(Value::Null | Value::Bool(false)) => open(req),
+            Some(Value::Bool(true)) => open_read_only(req),
+            Some(_) => Err(bad("`read_only`는 참 · 거짓")),
+        },
         "library.close" => close(req),
         "namumark.parse" => parse_op(req),
         "doc.open" => return Some(with_engine(req, |e| open_doc(e, req)).map_or_else(Reply::Json, |(v, model)| Reply::WithModel(v, model))),
         op if LIBRARY_OPS.contains(&op) => with_engine(req, |e| run(op, e, req)),
         op if SYNC_OPS.contains(&op) => with_engine(req, |e| run_sync(op, e, req)),
         op if INDEX_OPS.contains(&op) => with_engine(req, |e| run_index(op, e, req)),
+        op if WINDOW_OPS.contains(&op) => return Some(with_window(req, |w| run_window(op, w, req)).unwrap_or_else(Reply::Json)),
         _ => return None,
     };
     Some(Reply::Json(answer.unwrap_or_else(|e| e)))
@@ -97,8 +109,7 @@ fn same_folder(a: &Path, b: &Path) -> bool {
     matches!((std::fs::canonicalize(a), std::fs::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
-fn opened(h: u64, lib: &Library) -> Value {
-    let i = lib.info();
+fn opened(h: u64, i: &LibraryInfo) -> Value {
     json!({"ok": true, "handle": h, "library": i.library.to_string(), "device": i.device.to_string(), "format": i.format, "folder": i.folder.to_string_lossy()})
 }
 
@@ -107,26 +118,85 @@ fn open(req: &Value) -> Answer {
     let folder = dir.join(history_library::FOLDER);
     let mut t = table();
     if let Some((&h, e)) = t.libraries.iter().find(|(_, e)| same_folder(&e.lib.info().folder, &folder)) {
-        return Ok(opened(h, &e.lib));
+        return Ok(opened(h, e.lib.info()));
     }
     let e = Engine::open(&dir).map_err(fail)?;
     let h = t.next;
     t.next += 1;
-    let answer = opened(h, &e.lib);
+    let answer = opened(h, e.lib.info());
     t.libraries.insert(h, e);
+    Ok(answer)
+}
+
+/// `library.open {read_only: true}`(spec/windows-api.md 3-1) — 서재 창구를 연다. 만들지 않고(없으면 `no_library`) 쓰지 않는다.
+/// 같은 폴더를 다시 읽기 전용으로 열면 같은 손잡이, 보통 손잡이와는 따로다. 답은 `library.open`의 칸 + `read_only: true`.
+fn open_read_only(req: &Value) -> Answer {
+    let dir = PathBuf::from(text(req, "dir")?);
+    // 손잡이 표를 잡기 전에 연다 — 정체를 보고 곧 놓는다(파일을 쥐지 않는다).
+    let mut w = Window::open(&dir).map_err(fail)?;
+    let info = w.info().map_err(fail)?;
+    let mut t = table();
+    let h = match t.windows.iter().find(|(_, x)| same_folder(x.folder(), w.folder())) {
+        Some((&h, _)) => h,
+        None => {
+            let h = t.next;
+            t.next += 1;
+            t.windows.insert(h, w);
+            h
+        }
+    };
+    let mut answer = opened(h, &info);
+    answer["read_only"] = json!(true);
     Ok(answer)
 }
 
 fn close(req: &Value) -> Answer {
     let h = handle_of(req)?;
-    table().libraries.remove(&h).map(|_| json!({"ok": true})).ok_or_else(|| bad_handle(h))
+    let mut t = table();
+    t.views.remove(&h);
+    let closed = t.libraries.remove(&h).is_some() || t.windows.remove(&h).is_some();
+    if closed {
+        Ok(json!({"ok": true}))
+    } else {
+        Err(bad_handle(h))
+    }
+}
+
+/// 읽기 전용 손잡이로 부른 쓰기 · 동기화 · 색인 op 따위 — `read_only`(그 손잡이는 `window.*` · `library.close`만 받는다).
+fn read_only(req: &Value) -> Value {
+    fail(Error::ReadOnly(req.get("op").and_then(Value::as_str).unwrap_or("").to_string()))
 }
 
 fn with_engine<T>(req: &Value, f: impl FnOnce(&mut Engine) -> Result<T, Value>) -> Result<T, Value> {
     let h = handle_of(req)?;
     let mut t = table();
+    if t.windows.contains_key(&h) {
+        return Err(read_only(req));
+    }
     let e = t.libraries.get_mut(&h).ok_or_else(|| bad_handle(h))?;
     f(e)
+}
+
+/// `window.*`의 창구 — 읽기 전용 손잡이면 그 창구, 보통 손잡이면 그 서재 자리에 따로 연 창구(처음 물을 때 연다).
+fn with_window(req: &Value, f: impl FnOnce(&mut Window) -> Result<Reply, Value>) -> Result<Reply, Value> {
+    let h = handle_of(req)?;
+    let mut guard = table();
+    let t = &mut *guard;
+    if let Some(w) = t.windows.get_mut(&h) {
+        return f(w);
+    }
+    let Some(e) = t.libraries.get(&h) else {
+        return Err(bad_handle(h));
+    };
+    let w = match t.views.entry(h) {
+        std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+        std::collections::hash_map::Entry::Vacant(v) => {
+            // 엔진의 자리는 `<앱 자료 폴더>/HistoryCore` — 창구는 앱 자료 폴더를 받는다.
+            let folder = &e.lib.info().folder;
+            v.insert(Window::open(folder.parent().unwrap_or(folder)).map_err(fail)?)
+        }
+    };
+    f(w)
 }
 
 fn saved(s: &Saved) -> Value {
@@ -425,4 +495,97 @@ fn run_index(op: &str, e: &mut Engine, req: &Value) -> Answer {
         }
         other => Err(bad(format!("모르는 색인 op: {other}"))),
     }
+}
+
+/// 항목ID 한 개의 길이 한도(글자) — HistoryTime 창구의 `ID_MAX`와 같다(spec/windows-api.md 4절).
+const ENTITY_MAX: usize = 1024;
+/// `window.titles_exist` 한 번에 묻는 제목 수 한도.
+const TITLES_MAX: usize = 1000;
+/// `window.search`의 `limit` — (기본, 많아야).
+const SEARCH_LIMIT: (i64, i64) = (20, 100);
+
+/// 창구 답 — `ok`와 `api_version`(spec/windows-api.md 1절)을 붙인다.
+fn windowed(mut v: Value) -> Value {
+    v["ok"] = json!(true);
+    v["api_version"] = json!(history_library::WINDOW_API_VERSION);
+    v
+}
+
+/// 창구의 문서 요약 — `{id, ns, title, updated}`(`updated`는 머리 판 HLC의 UTC ISO 글).
+fn window_summary(d: &DocSummary) -> Value {
+    json!({"id": d.id.to_string(), "ns": d.ns.code(), "title": d.title, "updated": d.updated.utc_iso()})
+}
+
+/// `window.doc` · `window.doc_by_title`의 답 — 있으면 요약 + `found: true`에 모델 글을 풀지 않고 끼운다, 없으면 `found: false`만.
+fn window_doc(found: Option<WindowDoc>) -> Reply {
+    match found {
+        Some(WindowDoc { summary, model }) => {
+            let mut v = windowed(window_summary(&summary));
+            v["found"] = json!(true);
+            Reply::WithModel(v, model)
+        }
+        None => Reply::Json(windowed(json!({"found": false}))),
+    }
+}
+
+/// 창구의 `ns`(없거나 null이면 `doc`).
+fn window_namespace(req: &Value) -> Result<Namespace, Value> {
+    match req.get("ns") {
+        None | Some(Value::Null) => Ok(Namespace::Doc),
+        Some(_) => namespace(req),
+    }
+}
+
+/// 창구의 `limit` — 없으면 기본, 정수면 1과 가장 많이 사이로 자른다(HistoryTime 창구와 같은 규칙). 정수가 아니면 `bad_request`.
+fn window_limit(req: &Value, (fallback, most): (i64, i64)) -> Result<usize, Value> {
+    match req.get("limit") {
+        None | Some(Value::Null) => Ok(fallback as usize),
+        Some(v) => match (v.as_i64(), v.as_u64()) {
+            (Some(n), _) => Ok(n.clamp(1, most) as usize),
+            (None, Some(_)) => Ok(most as usize),
+            _ => Err(bad("`limit`(정수)가 아님")),
+        },
+    }
+}
+
+/// 서재 창구 질의(spec/windows-api.md 4절). 실패는 엔진 실패 꼴(`code`) 그대로.
+fn run_window(op: &str, w: &mut Window, req: &Value) -> Result<Reply, Value> {
+    let v = match op {
+        "window.version" => json!({"library": w.version().map_err(fail)?.to_string(), "engine": history_library::ENGINE_VERSION}),
+        "window.doc" => return Ok(window_doc(w.doc(doc_id(req, "id")?).map_err(fail)?)),
+        "window.doc_by_title" => {
+            let ns = window_namespace(req)?;
+            return Ok(window_doc(w.doc_by_title(ns, text(req, "title")?).map_err(fail)?));
+        }
+        "window.docs_for_entity" => {
+            let entity = text(req, "entity")?.trim();
+            if entity.is_empty() {
+                return Err(bad("`entity`가 비었음"));
+            }
+            if entity.chars().count() > ENTITY_MAX {
+                return Err(bad(format!("`entity`는 {ENTITY_MAX}자까지")));
+            }
+            let (entity, docs) = w.docs_for_entity(entity).map_err(fail)?;
+            json!({"entity": entity, "docs": docs.iter().map(window_summary).collect::<Vec<_>>()})
+        }
+        "window.titles_exist" => {
+            let list = req.get("titles").and_then(Value::as_array).ok_or_else(|| bad("`titles`(목록)가 없음"))?;
+            if list.len() > TITLES_MAX {
+                return Err(bad(format!("`titles`는 {TITLES_MAX}개까지")));
+            }
+            let mut titles = Vec::with_capacity(list.len());
+            for t in list {
+                titles.push((namespace(t)?, text(t, "title")?.to_string()));
+            }
+            let docs = w.titles_exist(&titles).map_err(fail)?;
+            json!({"docs": docs.iter().map(|d| d.map(|d| d.to_string())).collect::<Vec<_>>()})
+        }
+        "window.search" => {
+            let (q, limit) = (text(req, "q")?, window_limit(req, SEARCH_LIMIT)?);
+            let hits: Vec<Hit> = w.search(q, limit).map_err(fail)?;
+            json!({"docs": hits.iter().map(|h| json!({"id": h.doc.id.to_string(), "ns": h.doc.ns.code(), "title": h.doc.title, "snippet": h.snippet})).collect::<Vec<_>>()})
+        }
+        other => return Err(bad(format!("모르는 창구 op: {other}"))),
+    };
+    Ok(Reply::Json(windowed(v)))
 }

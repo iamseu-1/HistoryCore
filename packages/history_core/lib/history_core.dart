@@ -3,3 +3,4 @@ library;
 
 export 'src/engine.dart';
 export 'src/library.dart';
+export 'src/window.dart';

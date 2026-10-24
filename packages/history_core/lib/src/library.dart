@@ -19,6 +19,8 @@ class WrongLibraryError extends HistoryCoreError {
 }
 
 class LibraryInfo {
+  /// `library.open`의 답에서(읽기 전용 열기의 답도 같은 칸).
+  factory LibraryInfo.fromJson(Map<String, dynamic> j) = LibraryInfo._;
   LibraryInfo._(Map<String, dynamic> j)
       : library = j['library'] as String,
         device = j['device'] as String,

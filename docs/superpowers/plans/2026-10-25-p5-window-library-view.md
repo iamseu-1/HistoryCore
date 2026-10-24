@@ -9,7 +9,7 @@
 
 **Architecture:**
 - 엔진(Rust): 새 형 `history_index::Window`(`crates/index/src/window.rs`) — 서재 읽기 연결(`history_library::Reader`와 같은 꼴) + 색인 읽기 연결(있고 판이 맞을 때만). 쓰는 `Engine`에 깃발을 더하지 않고 **형으로 쓰는 길을 막는다**(R2).
-- 다리(`crates/ffi`): `library.open {read_only: true}`는 손잡이 표에 `Window`를 따로 넣는다. `window.*` op는 그 손잡이만 받고, 그 손잡이로 다른 op를 부르면 `read_only`(R1).
+- 다리(`crates/ffi`): `library.open {read_only: true}`는 손잡이 표에 `Window`를 따로 넣는다. 그 손잡이로 `window.*` · `library.close` 밖의 op를 부르면 `read_only`, `window.*`는 보통 손잡이도 받는다(R1).
 - Dart(`packages/history_core`): `LibraryWindow.open(core, dir)` — 쓰는 메서드가 없는 따로 된 형. 값 형은 공개 `fromJson`.
 - `packages/library_view`(새, Flutter): 아카이브 `lib/src/view`의 「그리기 모델 → 위젯」 몫과 그것이 쓰는 토큰(`lib/src/ui`의 일부)을 옮겨 온다. 엔진(FFI)에 기대지 않고 모델 JSON(`Map`) · 콜백(`DocContext`)만 받는다(R6 · R8).
 
@@ -19,7 +19,7 @@
 
 ## 판단(Ruling)
 
-- **R1 읽기 전용 손잡이는 `window.*` · `library.close`만 받는다** — 다른 읽기 op도 막는다. `doc.open`은 낡은 모델을 그 자리에서 그려 색인에 굳혀 넣는 쓰기가 있고, 바깥 앱이 약속 밖 op(`search.titles` 등)에 기대면 그 op를 바꿀 때 바깥이 깨진다. 틀리면: 바깥 앱이 더 필요한 것이 생기면 `window.*`에 질의를 더한다(판 그대로 — spec 1절).
+- **R1 읽기 전용 손잡이는 `window.*` · `library.close`만 받는다** — 다른 읽기 op도 막는다. `doc.open`은 낡은 모델을 그 자리에서 그려 색인에 굳혀 넣는 쓰기가 있고, 바깥 앱이 약속 밖 op(`search.titles` 등)에 기대면 그 op를 바꿀 때 바깥이 깨진다. 틀리면: 바깥 앱이 더 필요한 것이 생기면 `window.*`에 질의를 더한다(판 그대로 — spec 1절). **거꾸로 `window.*`는 보통 손잡이도 받는다**(걸음 3 지시 — 처음 계획의 「보통 손잡이로 `window.doc` → `bad_handle`」을 바꿈): 그 서재 자리에 따로 연 `Window`로 답해 두 손잡이의 답이 바이트까지 같고 쓰는 엔진의 색인에 굳혀 넣지 않는다. 아카이브 자신(G11 뒤 Android provider — 앱이 이미 쓰는 손잡이를 쥐고 있음)과 검사가 쓴다.
 - **R2 읽기 전용은 새 형 `Window`** — `Engine`에 `read_only` 깃발을 두면 쓰는 메서드를 하나라도 빠뜨렸을 때 쓴다. `Window`는 읽기 연결만 갖는다(`SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only`).
 - **R3 색인이 없거나 판이 다르면** `docs_for_entity` · `titles_exist` · `search`는 `no_index`, `doc` · `doc_by_title`은 서재의 머리 판을 그 자리에서 그려 답한다(틀은 같은 서재에서 읽어 펼침 — `LibraryTemplates`와 같은 셈, 읽기 연결로). 읽기 전용은 색인을 짓지 못하므로.
 - **R4 곁 파일 치우기** — 아카이브가 꺼진 서재를 읽으면 SQLite가 빈 `-wal` · `-shm`을 만든다. 열기 전에 없던 것만, `-wal`은 비었을 때만, `-shm`은 `-wal`이 없어졌을 때만, Windows만 지운다(HistoryTime `prototype/engine/src/shelf.rs`의 `tidy`). `library.db` · `index.db` 둘 다.
@@ -37,6 +37,8 @@ pub struct Window { /* 자리(앱 자료 폴더)와 압축 풀기 문맥만 — 
 impl Window {
     pub fn open(app_dir: &Path) -> Result<Window>;                       // no_library · not_a_library · newer_format(보고 곧 놓음)
     pub fn version(&mut self) -> Result<LibraryId>;                      // 질의마다 읽음 — 합류하면 바뀐다
+    pub fn info(&mut self) -> Result<LibraryInfo>;                       // 걸음 3 — 읽기 전용 열기의 답(서재 · 기기 · 형식 · 자리)
+    pub fn folder(&self) -> &Path;                                       // 걸음 3 — 손잡이 표의 같은 폴더 찾기
     pub fn doc(&mut self, id: DocId) -> Result<Option<WindowDoc>>;       // 지운 문서 · 없음 = None. 넘겨주기 안 따라감
     pub fn doc_by_title(&mut self, ns: Namespace, title: &str) -> Result<Option<WindowDoc>>;
     pub fn docs_for_entity(&mut self, entity: &str) -> Result<(String, Vec<DocSummary>)>; // (맞춘 ID, 문서) · no_index
@@ -45,7 +47,7 @@ impl Window {
 }
 pub struct WindowDoc { pub summary: DocSummary, pub model: String }    // 모델은 글 그대로(다리가 풀지 않고 끼움)
 // 찾기 한 줄은 색인의 `Hit { doc, snippet }` 그대로(따로 된 WindowHit를 두지 않음). 곁 파일 치우기는 연결마다의 `SideFiles`가 한다.
-// history_library: Reader::open_library(app_dir) · Reader::read(질의 하나 = 읽기 거래 하나) · library · last_seq · summary · body_by_title
+// history_library: Reader::open_library(app_dir) · Reader::read(질의 하나 = 읽기 거래 하나) · library · device · format · last_seq · summary · body_by_title
 //                  open_read_only(path) → (Connection, SideFiles) · in_read_tx · READ_ONLY_BUSY(2초)
 //                  Hlc::utc_iso() — `updated`의 UTC ISO 글(다리가 씀) · WINDOW_API_VERSION = 1
 // history_library::Error에 NoLibrary · ReadOnly · NoIndex — code "no_library" · "read_only" · "no_index"
@@ -54,10 +56,12 @@ pub struct WindowDoc { pub summary: DocSummary, pub model: String }    // 모델
 다리 op(spec/windows-api.md 4절 그대로): `library.open {dir, read_only: true}` → `library.open`의 칸 + `read_only` · `window.version` · `window.doc` · `window.doc_by_title` · `window.docs_for_entity` · `window.titles_exist` · `window.search`. 답마다 `api_version: 1`, `updated`는 UTC ISO(`…T03:15:00.123Z`).
 
 ```dart
-// packages/history_core/lib/src/window.dart
+// packages/history_core/lib/src/window.dart — 걸음 3에서 지은 그대로
+const windowApiVersion = 1;
 class LibraryWindow {
-  static Future<LibraryWindow> open(HistoryCore core, String appDataDir); // NoLibraryError 등은 HistoryCoreError.code
-  Future<WindowVersion> version();
+  static Future<LibraryWindow> open(HistoryCore core, String appDataDir); // 실패는 HistoryCoreError.code(no_library 등)
+  final LibraryInfo info;                                                 // LibraryInfo.fromJson도 공개
+  Future<WindowVersion> version();                                        // {apiVersion, library, engine}
   Future<WindowDoc?> doc(String id);
   Future<WindowDoc?> docByTitle(String title, {Namespace ns = Namespace.doc});
   Future<List<WindowDocSummary>> docsForEntity(String entity);
@@ -65,7 +69,8 @@ class LibraryWindow {
   Future<List<WindowHit>> search(String q, {int limit = 20});
   Future<void> close();
 }
-// WindowDoc {id, ns, title, updated: DateTime(UTC), model: Map<String, dynamic>} · WindowDocSummary · WindowHit — 공개 fromJson
+// WindowDocSummary {id, ns, title, updated: DateTime(UTC)} · WindowDoc extends WindowDocSummary {model: Map<String, dynamic>}
+// · WindowHit {id, ns, title, snippet} · WindowVersion — 공개 fromJson. doc · docByTitle은 found가 거짓이면 null
 ```
 
 ```dart
@@ -92,7 +97,7 @@ abstract final class Ink / Vermilion / Radii / Metrics / TextStyles; // 설계 3
   - `doc`: 없음 · 지움 → None · 넘겨주기 문서는 따라가지 않고 `model.redirect` · 색인이 낡은 문서는 머리 판으로 그려 답하고 `index.db`는 바이트 그대로.
   - 색인 없음 · 판 다름 → `docs_for_entity` · `titles_exist` · `search`는 `no_index`, `doc`은 됨.
   - `titles_exist` · `search`(제목 먼저 · 본문 뒤 · 한 번 · `limit`).
-- **다리 `crates/ffi/tests/window.rs`**: `read_only` 답 칸 · 보통 손잡이와 따로 · 같은 폴더 두 번 같은 손잡이 · 읽기 전용 손잡이로 `doc.save` · `doc.open` · `index.step` → `read_only` · 보통 손잡이로 `window.doc` → `bad_handle` · 답마다 `api_version` 1 · `updated` ISO 꼴 · `model`이 글 그대로.
+- **다리 `crates/ffi/tests/window.rs`**: `read_only` 답 칸 · 보통 손잡이와 따로 · 같은 폴더 두 번 같은 손잡이 · 읽기 전용 손잡이로 `doc.save` · `doc.open` · `index.step` → `read_only` · 보통 손잡이로 `window.*` → 읽기 전용 손잡이와 바이트까지 같은 답(R1 — 걸음 3에서 바꿈) · 답마다 `api_version` 1 · `updated` ISO 꼴 · `model`이 글 그대로.
 - **Dart `packages/history_core/test/window_test.dart`**: 진짜 엔진으로 열고 읽고 닫음 · 값 형 `fromJson` · 없는 서재 오류 code.
 - **`packages/library_view/test/`**: 나무마크 견본(spec/namumark.md 표의 블록 · 인라인 전부)의 모델 → 그려짐(예외 없음) · 링크 · 연표 링크 · 한자 누름이 콜백으로 · 없는 문서 링크는 `exists`로 가름 · 연표 띠는 `strip`이 null이면 「제목 · 범위」 자리 · 한자 카드 · 380 폭에서 넘침 없음.
 
@@ -114,6 +119,13 @@ abstract final class Ink / Vermilion / Radii / Metrics / TextStyles; // 설계 3
 11. **연표 띠는 한 줄을 다 차지해야 띠다** — `[연표(X)] 글`은 문단이다(spec/namumark.md 블록 매크로 규칙). 검사 견본을 띠 한 줄 · 글 한 줄로 고쳤다.
 12. **함께 쓰는 셈** — 같은 답을 내야 하는 찾기는 `engine.rs`의 함수 하나를 쓰는 엔진과 창구가 함께 부른다: `draw`(그리기 선택) · `timeline_docs_in` · `titles_exist_in` · `search_titles_in` · `search_body_in`(머리 판 견주기는 `Heads` — `Library` · `Reader`). 창구의 틀 읽기 `ReaderTemplates`는 `LibraryTemplates`와 같은 셈(맞춘 제목의 살아 있는 문서 중 먼저 만든 것)을 같은 읽기 거래에서 한다.
 
+### 걸음 3에서 알게 된 것
+
+13. **손잡이 표는 칸 셋** — `libraries`(쓰는 `Engine`) · `windows`(읽기 전용 `Window`) · `views`(보통 손잡이의 `window.*`용 `Window` — 처음 물을 때 `<folder>/..`로 연다). 번호는 함께 세고, `library.close`는 셋에서 모두 지운다. `with_engine`은 읽기 전용 번호면 `read_only`로 거절하므로 `handle`을 준 `namumark.parse`도 막힌다. 읽기 전용 열기는 손잡이 표를 잡기 전에 `Window::open` · `info`를 한다(정체를 보고 곧 놓음).
+14. **읽기 전용 열기의 답 칸** — `device` · `format`은 파일에서 읽는다(`Reader::device` · `Reader::format` — `user_version`, `Window::info`). 같은 폴더를 다시 열면 같은 손잡이지만 답은 그때 다시 읽은 값이다(합류하면 `library`가 바뀜).
+15. **`limit`은 자른다** — 걸음 2의 넘길 것은 「`limit` 100 넘음 `bad_request`」였지만 spec 4절은 「많아야 100」이고 HistoryTime 창구(`limit_arg`)도 1 ~ 가장 많이로 자른다. 같은 규칙으로 갔다: 정수면 1 ~ 100, 정수가 아니면(글 · 소수) `bad_request`. `entity` 길이는 앞뒤 공백을 뗀 뒤 코드 포인트로 센다(HistoryTime `ID_MAX`와 같은 셈).
+16. **Dart 기록(record)은 `Uint8List`를 같은 객체인지로 견준다** — 파일이 바이트까지 그대로인지 보는 검사는 바이트 대신 지문(FNV-1a)을 기록에 넣는다(`window_test.dart`의 `snapshot`).
+
 ## 진행(걸음 표시)
 
 전체 걸음은 두 저장소에 걸친 아홉이다. 이 저장소가 맡는 걸음은 1 · 2 · 3 · 4 · 8 · 9(5 · 6 · 7은 아카이브).
@@ -122,7 +134,7 @@ abstract final class Ink / Vermilion / Radii / Metrics / TextStyles; // 설계 3
 | --- | --- | --- |
 | 1 | 작업 폴더 · 정션 · `spec/windows-api.md` · `spec/README.md` · `spec/engine-api.md` 예정 줄 · `README.md` · 이 계획 | **끝**(2026-10-25) |
 | 2 | 엔진: 읽기 전용 열기(`Reader::open_library` · `Window`) · `window.*` 여섯의 Rust 몫 · 오류 코드 셋 · 띠 항목ID NFC(R5 — A로 감) · HLC → UTC ISO · `WINDOW_API_VERSION` · `spec/library-format.md` 색인 판(1 → 2)과 「읽기 전용 열기」 · `spec/namumark.md` 띠 NFC | **끝**(2026-10-25 — 새 검사 `crates/library/tests/read_only.rs` 9 · `crates/index/tests/window.rs` 12, 작업공간 232 통과) |
-| 3 | 다리 op · Dart `LibraryWindow` · 엔진 dll 짓기(`tools/build-native.ps1`) · `spec/engine-api.md` 예정 → 됨 | 기다림 |
+| 3 | 다리 op · Dart `LibraryWindow` · 엔진 dll 짓기(`tools/build-native.ps1`) · `spec/engine-api.md` 예정 → 됨 | **끝**(2026-10-25 — 새 검사 `crates/ffi/tests/window.rs` 6 · `packages/history_core/test/window_test.dart` 5, dll `packages/history_core/native/windows-x64/history_core.dll`(git 밖) — 아카이브 걸음 5 ~ 8이 정션으로 씀) |
 | 4 | `packages/library_view` 0.1.0(R6 · R7 · R8) · `history_core` 0.1.0 | 기다림 |
 | 8 | 함께 시험: 아카이브 작은 앱이 읽기 전용으로 peek · HistoryTime 임시 길(`shelf.docs`)과 같은 답인지 교차 확인 · 릴리스 빌드 | 기다림 |
 | 9 | 마무리: 새 검토자 · 넓은 검사(`cargo test --locked --workspace` · `clippy` · `flutter test` 두 패키지) · 보고 · 인수인계 · 넘길 것 | 기다림 |

@@ -472,6 +472,16 @@ impl Reader {
         meta_id(&self.db, "library", LibraryId::parse)
     }
 
+    /// 기기 ID(`meta.device` — 서재를 쓰는 기기. 창구 열기의 답에 싣는다).
+    pub fn device(&self) -> Result<DeviceId> {
+        meta_id(&self.db, "device", DeviceId::parse)
+    }
+
+    /// 서재 파일의 형식 판(`user_version`).
+    pub fn format(&self) -> Result<i64> {
+        Ok(self.db.pragma_query_value(None, "user_version", |r| r.get(0))?)
+    }
+
     /// 마지막 판 번호(`rev.seq`) — 색인의 눈금과 견준다.
     pub fn last_seq(&self) -> Result<i64> {
         Ok(self.db.prepare_cached(LAST_SEQ_SQL)?.query_row([], |r| r.get(0))?)

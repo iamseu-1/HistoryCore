@@ -7,7 +7,7 @@
 //!   (통째 짓기 — Windows는 열린 파일을 지우지 못한다) 곁 파일을 거둘 수 있다. 이 열기가 만든 곁 파일(`-wal` · `-shm`)은 질의 끝에 치운다(R4).
 use crate::engine::{draw, search_body_in, search_titles_in, timeline_docs_in, titles_exist_in, unzip_with, Hit};
 use crate::store::{meta_i64, ReadIndex};
-use history_library::{in_read_tx, DocId, DocSummary, Error, LibraryId, Namespace, Reader, Result, FOLDER};
+use history_library::{in_read_tx, DocId, DocSummary, Error, LibraryId, LibraryInfo, Namespace, Reader, Result, FOLDER};
 use history_namumark::{ObjectRef, Templates};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::cell::RefCell;
@@ -40,6 +40,16 @@ impl Window {
     /// 서재 ID(`window.version`의 `library` — 아카이브가 다른 서재로 합류하면 바뀐다).
     pub fn version(&mut self) -> Result<LibraryId> {
         self.read(|_, r| r.library())
+    }
+
+    /// 지금의 서재 정보 — 서재 · 기기 ID · 형식 판 · 자리(`library.open {read_only: true}`의 답).
+    pub fn info(&mut self) -> Result<LibraryInfo> {
+        self.read(|w, r| Ok(LibraryInfo { library: r.library()?, device: r.device()?, format: r.format()?, folder: w.folder.clone() }))
+    }
+
+    /// 서재의 자리(`<앱 자료 폴더>/HistoryCore`).
+    pub fn folder(&self) -> &Path {
+        &self.folder
     }
 
     /// 문서 하나의 요약과 그리기 모델. 없거나 지운 문서면 None. 넘겨주기를 따라가지 않는다(모델의 `redirect`를 보고 묻는 쪽이 다시 묻는다).

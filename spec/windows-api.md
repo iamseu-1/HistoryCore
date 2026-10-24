@@ -14,7 +14,7 @@
 | 쪽 | 상태 |
 | --- | --- |
 | 서재 창구의 자리(아카이브 레지스트리 · `HistoryArchive.api.json` · `historyarchive` 등록) | **됨** — 아카이브 P5-1 |
-| 서재 창구의 질의(HistoryCore 읽기 전용 열기 + `window.*`) | **예정** — HistoryCore 가지 `remake-7-link`(계획 `docs/superpowers/plans/2026-10-25-p5-window-library-view.md`) |
+| 서재 창구의 질의(HistoryCore 읽기 전용 열기 + `window.*`) | **됨** — HistoryCore 가지 `remake-7-link`(엔진 · 다리 op · Dart `LibraryWindow`, main 합치기 전 — 계획 `docs/superpowers/plans/2026-10-25-p5-window-library-view.md`) |
 | 서재 문서 그리기(`packages/library_view`) | **예정** — 같은 계획 |
 | 연표 창구(HistoryTime 엔진 `window.*` · `HKCU\Software\HistoryTime` · `historytime` 등록) | **됨** — HistoryTime 가지 `remake-7`(`de5f1f9`, 그 저장소 main 합치기 전) |
 | 연표 창구를 읽는 쪽(아카이브) | **예정** — 아카이브 P5-2(계획 `docs/superpowers/plans/2026-10-25-p5-2-timeline-window.md`) |
@@ -74,19 +74,19 @@
 
 ## 3. 읽는 길 둘
 
-### 3-1. 서재 — HistoryCore 읽기 전용 열기 + `window.*` (예정)
+### 3-1. 서재 — HistoryCore 읽기 전용 열기 + `window.*` (됨 — HistoryCore 가지 `remake-7-link`)
 
-읽는 앱(HistoryTime)은 HistoryCore 엔진(`packages/history_core` — 제 앱에 싣는 엔진)으로 아카이브의 서재를 **읽기 전용**으로 연다.
+읽는 앱(HistoryTime)은 HistoryCore 엔진(`packages/history_core` — 제 앱에 싣는 엔진)으로 아카이브의 서재를 **읽기 전용**으로 연다. Dart는 `LibraryWindow.open(core, <LibraryDir>)` → `version` · `doc` · `docByTitle` · `docsForEntity` · `titlesExist` · `search` · `close`(실패는 `HistoryCoreError.code`).
 
 1. 자리(2-4)에서 `LibraryDir` · `ApiVersion`을 얻는다. 판이 크면 끈다.
-2. `{"op": "library.open", "dir": <LibraryDir>, "read_only": true}` → `handle`(답은 `library.open`과 같은 칸 + `"read_only": true`).
+2. `{"op": "library.open", "dir": <LibraryDir>, "read_only": true}` → `handle`(답은 `library.open`과 같은 칸 — `library` · `device` · `format` · `folder` — + `"read_only": true`. `read_only`가 참 · 거짓이 아니면 `bad_request`).
    - **만들지 않는다** — 폴더 · `library.db` · `index.db` 어느 것도. 서재가 없으면 `no_library`로 실패한다.
    - **쓰지 않는다** — `library.db` · `index.db`를 `SQLITE_OPEN_READ_ONLY` · `query_only`로 연다. 정체 확인(`not_a_library` · `newer_format`)은 보통 열기와 같다.
    - **색인을 고치지 않는다** — 색인 isolate · `index.step` · 통째 짓기가 없다. 낡은 문서의 모델도 굳혀 넣지 않는다.
    - 아카이브가 켜져 있어도 된다 — WAL 읽기라 커밋된 판만 본다. 질의마다 읽기 거래로 감싸 반쯤 쓴 장면을 보지 않는다.
    - 아카이브가 꺼져 있을 때 SQLite는 읽기 전용 연결에도 빈 `-wal` · `-shm`을 만든다. **이 열기가 만든 것**(열기 전에 없던 것)은 닫을 때 치운다: `-wal`은 비었을 때만, `-shm`은 `-wal`이 없어졌을 때만, Windows만(그새 아카이브가 연 곁 파일은 지워지지 않고 실패한다 — 그대로 둔다). HistoryTime 엔진 `prototype/engine/src/shelf.rs`의 `tidy`(지금 연표가 아카이브 색인을 직접 읽는 임시 길)와 같은 규칙이다.
    - 같은 프로세스에서 같은 폴더를 다시 읽기 전용으로 열면 같은 손잡이다. 보통 열기 손잡이와는 따로다.
-3. 4절의 `window.*`를 묻는다. **읽기 전용 손잡이는 `window.*` · `library.close`만 받는다** — 다른 op(`doc.open`처럼 낡은 모델을 굳혀 넣는 읽기 op 포함)는 `read_only`로 실패한다.
+3. 4절의 `window.*`를 묻는다. **읽기 전용 손잡이는 `window.*` · `library.close`만 받는다** — 다른 op(`doc.open`처럼 낡은 모델을 굳혀 넣는 읽기 op · `handle`을 준 `namumark.parse` 포함)는 `read_only`로 실패한다. 거꾸로 `window.*`는 **보통 손잡이도 받는다** — 그 서재 자리에 따로 연 창구로 답해 두 손잡이의 답이 바이트까지 같다(쓰는 엔진의 색인에 굳혀 넣지 않는다). 아카이브 자신(G11 뒤의 Android provider)과 검사가 쓴다.
 4. `library.close`로 닫는다. 열어 둔 채 여러 번 물어도 되지만, 읽기 거래는 질의 하나 동안만 연다.
 
 Android는 7절의 provider로 읽는다(예정).
@@ -108,11 +108,11 @@ Android는 7절의 provider로 읽는다(예정).
 11. 저장소의 **SQLite 표를 직접 읽는 것은 약속 밖**이다(표 꼴은 HistoryTime 저장소 스키마 판마다 바뀐다).
 12. 손으로 볼 때와 검사는 HistoryTime 명령줄 도구 `archive-tool query <저장소> '<JSON>'`이 같은 답을 낸다.
 
-## 4. 서재 창구 질의 (아카이브의 서재 — HistoryCore `window.*`, 예정)
+## 4. 서재 창구 질의 (아카이브의 서재 — HistoryCore `window.*`, 됨 — 가지 `remake-7-link`)
 
 공통:
 
-- 요청은 `{"op": "window.<이름>", "handle": <읽기 전용 손잡이>, …}`. 답은 늘 `{"ok": true, "api_version": 1, …}`이고, 실패는 spec/engine-api.md의 실패 꼴(`code`)이다.
+- 요청은 `{"op": "window.<이름>", "handle": <읽기 전용 손잡이>, …}`(보통 손잡이도 받는다 — 3-1의 3). 답은 늘 `{"ok": true, "api_version": 1, …}`이고, 실패는 spec/engine-api.md의 실패 꼴(`code`)이다. 요청 모양이 틀리면(빠진 칸 · 글이 아님 · 모르는 `ns` · 한도를 넘음) `bad_request`, 닫았거나 없는 손잡이는 `bad_handle`.
 - **지운 문서는 없는 것으로.** **넘겨주기를 따라가지 않는다** — 넘겨주기 문서면 `model.redirect`를 보고 묻는 쪽이 다시 묻는다.
 - `id`는 소문자 UUID, `ns`는 이름공간 글자(`doc` · `category` · `template` · `file` · `front`), `updated`는 머리 판 HLC의 ms(위 48비트)를 UTC ISO 글로 쓴 것(`2026-10-24T03:15:00.123Z` — 밀리초 세 자리 · `Z`).
 - 색인을 쓰는 질의(`docs_for_entity` · `titles_exist` · `search`)는 색인에 든 대로 답한다 — 아카이브가 쓰다 끊겼거나 동기화로 판만 들어온 문서는 다음에 아카이브가 색인할 때까지 옛 값일 수 있다. 색인 파일이 없거나 판이 다르면(`HCIX` · `user_version` — spec/library-format.md 「색인」) 이 셋은 `no_index`로 실패하고, `doc` · `doc_by_title`은 서재에서 그려 답한다.
@@ -124,14 +124,14 @@ Android는 7절의 provider로 읽는다(예정).
 | `window.doc_by_title` | `handle` · `ns`?(기본 `doc`) · `title` | `window.doc`과 같음 |
 | `window.docs_for_entity` | `handle` · `entity` | `entity`(맞춘 항목ID) · `docs`: [`{id, ns, title, updated}`] |
 | `window.titles_exist` | `handle` · `titles`: [`{ns, title}`](1,000개까지) | `docs`: [ID \| null] |
-| `window.search` | `handle` · `q` · `limit`?(20, 많아야 100) | `docs`: [`{id, ns, title, snippet}`] |
+| `window.search` | `handle` · `q` · `limit`?(20, 1 ~ 100으로 자름) | `docs`: [`{id, ns, title, snippet}`] |
 | `window.hanja` — **예정**(엔진 `hanja.*` P2-4 뒤) | `handle` · `char` | `found` · `char` · `reading` · `radical` · `strokes` · `meaning` · `entry` |
 
 - `window.doc`: 없는 ID · 지운 문서면 `{"found": false}`만 싣는다(값 칸 없음 — `null`이 아니다. 연표 창구와 같은 꼴). `id`가 UUID 꼴이 아니면 `bad_request`. `model`은 spec/namumark.md의 그리기 모델(판 1)이고 글 그대로 끼운다. 색인의 모델이 낡았거나 없으면 머리 판을 그 자리에서 그려 답한다(굳혀 넣지 않는다).
-- `window.doc_by_title`: 제목은 spec/library-format.md 「제목」 규칙으로 맞춘 뒤 찾는다. 같은 제목이 둘이면 먼저 만든 것(`titles.exist`와 같음). 제목으로 쓸 수 없는 글이면 `found: false`, 모르는 `ns`는 `bad_request`.
-- `window.docs_for_entity`: `entity`를 8절대로 맞춰(앞뒤 공백 떼기 · NFC), 문서 속 연표 링크 `[[연표:…]]` · 연표 띠 `[연표(…)]`로 그 항목을 잇는 문서를 낸다 — 지운 문서 뺌 · 같은 문서는 한 번 · 제목 차례(UTF-8 바이트 차례). 색인 op `timeline.docs`와 같은 찾기다. 자리 꼬리(`.mv<해>` · `#1` · `~seg<수>`)는 떼지 않는다 — 원 ID로 묻는 것은 묻는 쪽 몫(HistoryTime `api::entity_id`). 빈 `entity` · 1,024자 넘음은 `bad_request`.
-- `window.titles_exist`: 같은 차례 · 제목은 맞춰서 · 같은 제목이 둘이면 먼저 만든 것 · 제목으로 쓸 수 없는 글은 null(색인 op `titles.exist`와 같음).
-- `window.search`: 제목 앞부분(`search.titles`, `ns` = `doc`)으로 찾은 것을 먼저, 이어 본문(`search.body`)으로 찾은 것 — 같은 문서는 한 번, `limit`까지. 제목으로 찾은 줄의 `snippet`은 빈 글, 본문 줄은 `search.body`의 `snippet`.
+- `window.doc_by_title`: 제목은 spec/library-format.md 「제목」 규칙으로 맞춘 뒤 찾는다. 같은 제목이 둘이면 먼저 만든 것(`titles.exist`와 같음). 제목으로 쓸 수 없는 글이면 `found: false`, 모르는 `ns`는 `bad_request`(`ns`가 없거나 null이면 `doc`).
+- `window.docs_for_entity`: `entity`를 8절대로 맞춰(앞뒤 공백 떼기 · NFC), 문서 속 연표 링크 `[[연표:…]]` · 연표 띠 `[연표(…)]`로 그 항목을 잇는 문서를 낸다 — 지운 문서 뺌 · 같은 문서는 한 번 · 제목 차례(UTF-8 바이트 차례). 색인 op `timeline.docs`와 같은 찾기다. 자리 꼬리(`.mv<해>` · `#1` · `~seg<수>`)는 떼지 않는다 — 원 ID로 묻는 것은 묻는 쪽 몫(HistoryTime `api::entity_id`). 앞뒤 공백을 뗀 `entity`가 비었거나 1,024자(코드 포인트)를 넘으면 `bad_request`.
+- `window.titles_exist`: 같은 차례 · 제목은 맞춰서 · 같은 제목이 둘이면 먼저 만든 것 · 제목으로 쓸 수 없는 글은 null(색인 op `titles.exist`와 같음). 줄마다 `ns`와 `title`이 있어야 하고(없거나 모르는 `ns`는 `bad_request`), 1,000개를 넘으면 `bad_request`.
+- `window.search`: 제목 앞부분(`search.titles`, `ns` = `doc`)으로 찾은 것을 먼저, 이어 본문(`search.body`)으로 찾은 것 — 같은 문서는 한 번, `limit`까지. 제목으로 찾은 줄의 `snippet`은 빈 글, 본문 줄은 `search.body`의 `snippet`. `limit`은 정수면 1 ~ 100으로 자르고(HistoryTime 창구의 `limit`과 같은 규칙), 정수가 아니면 `bad_request`. 빈 `q`(공백뿐 포함)는 빈 `docs`.
 - `window.hanja`: 자전 카드(아카이브 초안 4절의 꼴). 엔진 `hanja.*`가 오면 그 꼴로 굳힌다 — 그때까지 이 질의는 없고(모르는 op), HistoryTime은 한자 카드 칸을 뺀다.
 
 ## 5. 연표 창구 질의 (HistoryTime — 됨)
