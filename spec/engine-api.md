@@ -84,3 +84,6 @@
 | op | 계획 | 하는 일 |
 | --- | --- | --- |
 | `hanja.get` · `hanja.search` | P2-4 | 자전 조목 · 찾기 |
+| `library.open`의 `read_only: true` | P5(가지 `remake-7-link`, spec/windows-api.md 3-1) | 서재를 읽기 전용으로 연다 — 폴더 · 파일 · 색인을 만들지 않고(없으면 `no_library`) 쓰지 않으며 색인을 고치지 않는다. 답은 `library.open` + `read_only`. 그 손잡이는 `window.*` · `library.close`만 받는다(다른 op는 `read_only`) |
+| `window.version` · `window.doc` · `window.doc_by_title` · `window.docs_for_entity` · `window.titles_exist` · `window.search` | P5(같은 가지, spec/windows-api.md 4절) | 서재 창구 질의 — 읽기 전용 손잡이로, 답마다 `api_version`. 색인이 없거나 판이 다르면 색인을 쓰는 질의는 `no_index` |
+| `window.hanja` | P2-4 뒤 | 서재 창구의 자전 카드(spec/windows-api.md 4절) |

@@ -1,0 +1,118 @@
+# P5 서재 창구 · `library_view` — 구현 계획(HistoryCore 몫)
+
+> **가벼운 계획**(memory `workflow-autonomy`): 인터페이스 · 먼저 쓸 검사 · 까다로운 곳 · 판단만 적는다. 구현은 실행하면서 쓴다 — 검사를 먼저 쓰고 빨간불을 본 뒤 구현.
+>
+> **누가 · 어디서**: 감독 허락(2026-10-24 밤 — HistoryTime 감독 결정 G10 "지금 시작" · G11 서명 키는 나중)으로 HistoryTime 리메이크 7단계의 '다른 저장소 몫' 갈래가 한다. 가지 `remake-7-link`(main `8c7a7ba`에서) · 작업 폴더 `.claude/worktrees/remake-7-link`. 아카이브 쪽은 같은 이름의 가지(아카이브 계획 `docs/superpowers/plans/2026-10-25-p5-2-timeline-window.md`).
+> **하지 않는 것**: main 합치기 · 밀기 · 태그(감독) · Android provider(G11 뒤) · HistoryTime 저장소 고치기.
+
+**Goal:** 다른 앱(HistoryTime)이 같은 기기의 아카이브 서재를 **읽기 전용으로** 묻는 길(서재 창구)과, 그리기 모델만으로 문서 전문 · 한자 카드를 그리는 패키지(`library_view`)를 짓는다. 약속은 `spec/windows-api.md`(이 가지에서 새로 씀)가 원본이다. 통과: 아카이브가 켜진 채로 · 꺼진 채로 다른 프로세스가 `window.*`를 물어도 서재 폴더의 파일이 바뀌지 않고(곁 파일 포함), HistoryTime이 받을 꼴(`docs_for_entity` · `doc`)이 약속대로 나오며, `library_view`가 엔진 없이 표본 모델을 그린다.
+
+**Architecture:**
+- 엔진(Rust): 새 형 `history_index::Window`(`crates/index/src/window.rs`) — 서재 읽기 연결(`history_library::Reader`와 같은 꼴) + 색인 읽기 연결(있고 판이 맞을 때만). 쓰는 `Engine`에 깃발을 더하지 않고 **형으로 쓰는 길을 막는다**(R2).
+- 다리(`crates/ffi`): `library.open {read_only: true}`는 손잡이 표에 `Window`를 따로 넣는다. `window.*` op는 그 손잡이만 받고, 그 손잡이로 다른 op를 부르면 `read_only`(R1).
+- Dart(`packages/history_core`): `LibraryWindow.open(core, dir)` — 쓰는 메서드가 없는 따로 된 형. 값 형은 공개 `fromJson`.
+- `packages/library_view`(새, Flutter): 아카이브 `lib/src/view`의 「그리기 모델 → 위젯」 몫과 그것이 쓰는 토큰(`lib/src/ui`의 일부)을 옮겨 온다. 엔진(FFI)에 기대지 않고 모델 JSON(`Map`) · 콜백(`DocContext`)만 받는다(R6 · R8).
+
+**Tech Stack:** 지금 것 그대로 — Rust 1.94.1 · rusqlite 0.37 · unicode-normalization(이미 `history_namumark`에 있음) · Flutter 3.47 / Dart 3.13 · `path_drawing`(아카이브가 이미 씀).
+
+**Spec:** `spec/windows-api.md` 3-1 · 4 · 8절 · `spec/engine-api.md` '예정' · `spec/namumark.md`(그리기 모델 판 1) · 설계 4-1 · 4-3 · 7-1 · 7-3.
+
+## 판단(Ruling)
+
+- **R1 읽기 전용 손잡이는 `window.*` · `library.close`만 받는다** — 다른 읽기 op도 막는다. `doc.open`은 낡은 모델을 그 자리에서 그려 색인에 굳혀 넣는 쓰기가 있고, 바깥 앱이 약속 밖 op(`search.titles` 등)에 기대면 그 op를 바꿀 때 바깥이 깨진다. 틀리면: 바깥 앱이 더 필요한 것이 생기면 `window.*`에 질의를 더한다(판 그대로 — spec 1절).
+- **R2 읽기 전용은 새 형 `Window`** — `Engine`에 `read_only` 깃발을 두면 쓰는 메서드를 하나라도 빠뜨렸을 때 쓴다. `Window`는 읽기 연결만 갖는다(`SQLITE_OPEN_READ_ONLY` + `PRAGMA query_only`).
+- **R3 색인이 없거나 판이 다르면** `docs_for_entity` · `titles_exist` · `search`는 `no_index`, `doc` · `doc_by_title`은 서재의 머리 판을 그 자리에서 그려 답한다(틀은 같은 서재에서 읽어 펼침 — `LibraryTemplates`와 같은 셈, 읽기 연결로). 읽기 전용은 색인을 짓지 못하므로.
+- **R4 곁 파일 치우기** — 아카이브가 꺼진 서재를 읽으면 SQLite가 빈 `-wal` · `-shm`을 만든다. 열기 전에 없던 것만, `-wal`은 비었을 때만, `-shm`은 `-wal`이 없어졌을 때만, Windows만 지운다(HistoryTime `prototype/engine/src/shelf.rs`의 `tidy`). `library.db` · `index.db` 둘 다.
+- **R5 항목ID는 NFC** — `window.docs_for_entity`는 받은 ID를 앞뒤 공백을 떼고 NFC로 맞춰 찾는다. 그리고 **연표 띠 `[연표(<항목ID>, …)]`의 항목ID도 해석기가 NFC로 맞춘다**(A, 추천 — 지금은 링크 `[[연표:…]]`만 `ObjectRef::parse`로 NFC이고 띠는 `split_args` 그대로라, NFD로 쓴 띠는 색인 `entity` 표에서 못 찾는다). 그리기 모델의 `timeline_strip.entity`도 NFC가 된다 — NFD로 적은 띠만 바뀌고 모델 판은 1 그대로. B: 뽑기(`timeline_entities`)에서만 NFC — 모델과 색인이 달라진다.
+- **R6 `library_view`로 옮기는 몫** — 아카이브 `lib/src/view`의 `model.dart` · `context.dart` · `blocks.dart` · `inlines.dart` · `toc.dart` · `info_box.dart` · `float_layout.dart` · `selection.dart` · `hanja_card.dart` · `timeline_strip.dart`와, 그것들이 쓰는 `lib/src/ui`의 `tokens.dart` · `type.dart` · `dom.dart` · `press.dart` · `svg.dart` · `icons.dart`(필요한 아이콘만이 아니라 파일째). 앱 몫(`doc_head.dart` · `preview_card.dart` · `charts/` · 화면)은 아카이브에 남는다. **아카이브 화면은 바뀌지 않는다**(걸음 5의 검사기 FAIL 0 · 위젯 검사 그대로).
+- **R7 판** — `library_view` 0.1.0. `history_core`도 새 API(읽기 전용 · `window.*`)가 드니 0.0.1 → **0.1.0**으로 함께 올린다(A, 추천 — 저장소 태그 하나가 두 패키지를 같은 판으로 가리킴). 태그 이름과 다는 것은 감독. 아카이브는 path 의존이라 `pubspec.lock`의 판 줄만 바뀐다(아카이브 걸음 5에서 함께 커밋).
+- **R8 `library_view`는 엔진에 기대지 않는다** — 의존은 `flutter` · `path_drawing`뿐. 글꼴은 앱이 싣고 패키지는 가족 이름(`Pretendard` · `NotoSerifKR` · `D2Coding` · `HanaMinA` · `HanaMinB`)만 쓴다. 바깥 일(링크 열기 · 문서 있는지 · 연표 띠 자료 · 한자 카드 자료)은 모두 `DocContext`의 콜백.
+- **R9 엔진 dll** — 이 PC에서는 `tools/build-native.ps1`(Windows x64)만 짓는다. Android `.so`는 이 PC에 NDK가 없어 CI 몫(합칠 때).
+
+## 인터페이스
+
+```rust
+// crates/index/src/window.rs
+pub struct Window { /* 서재 · 색인 읽기 연결, 곁 파일 표시 */ }
+impl Window {
+    pub fn open(app_dir: &Path) -> Result<Window>;                       // no_library · not_a_library · newer_format
+    pub fn library(&self) -> LibraryId;
+    pub fn doc(&self, id: DocId) -> Result<Option<WindowDoc>>;           // 지운 문서 · 없음 = None. 넘겨주기 안 따라감
+    pub fn doc_by_title(&self, ns: Namespace, title: &str) -> Result<Option<WindowDoc>>;
+    pub fn docs_for_entity(&self, entity: &str) -> Result<(String, Vec<DocSummary>)>; // (맞춘 ID, 문서) · no_index
+    pub fn titles_exist(&self, titles: &[(Namespace, String)]) -> Result<Vec<Option<DocId>>>;
+    pub fn search(&self, q: &str, limit: usize) -> Result<Vec<WindowHit>>;
+}
+pub struct WindowDoc { pub summary: DocSummary, pub model: String }    // 모델은 글 그대로(다리가 풀지 않고 끼움)
+pub struct WindowHit { pub doc: DocSummary, pub snippet: String }
+impl Drop for Window { /* R4 곁 파일 치우기 */ }
+// history_library::Error에 NoLibrary · ReadOnly · NoIndex — code "no_library" · "read_only" · "no_index"
+```
+
+다리 op(spec/windows-api.md 4절 그대로): `library.open {dir, read_only: true}` → `library.open`의 칸 + `read_only` · `window.version` · `window.doc` · `window.doc_by_title` · `window.docs_for_entity` · `window.titles_exist` · `window.search`. 답마다 `api_version: 1`, `updated`는 UTC ISO(`…T03:15:00.123Z`).
+
+```dart
+// packages/history_core/lib/src/window.dart
+class LibraryWindow {
+  static Future<LibraryWindow> open(HistoryCore core, String appDataDir); // NoLibraryError 등은 HistoryCoreError.code
+  Future<WindowVersion> version();
+  Future<WindowDoc?> doc(String id);
+  Future<WindowDoc?> docByTitle(String title, {Namespace ns = Namespace.doc});
+  Future<List<WindowDocSummary>> docsForEntity(String entity);
+  Future<List<String?>> titlesExist(List<(Namespace, String)> titles);
+  Future<List<WindowHit>> search(String q, {int limit = 20});
+  Future<void> close();
+}
+// WindowDoc {id, ns, title, updated: DateTime(UTC), model: Map<String, dynamic>} · WindowDocSummary · WindowHit — 공개 fromJson
+```
+
+```dart
+// packages/library_view/lib/library_view.dart — 아카이브 lib/src/view · lib/src/ui의 지금 이름 그대로 옮김
+class DocModel { static DocModel parse(Map<String, dynamic> j); final ObjectAddress? redirect; final List<Block> blocks; ... } // 그리기 모델 판 1
+sealed class Block / Inline; class ObjectAddress; class Footnote; class Section;
+class DocContext { exists · onLink · onUrl · onTimeline · onHanja · onHanjaTap · strip · footnotes · sections · onMenu · ... } // 바깥 일은 모두 콜백
+class SliverDocBlocks extends StatefulWidget { SliverDocBlocks({required List<Block> blocks, required DocContext context}); }
+class BlockView · HeadingView · TableView · FootnotesView;  class InlineSpans;
+class HanjaCard { char · readings · radical · strokes · ... }  class HanjaCardView extends StatelessWidget;
+class TimelineStripData / StripSpan / StripEvent;            // 문서 속 연표 띠 그림 자료
+abstract final class Ink / Vermilion / Radii / Metrics / TextStyles; // 설계 3절 토큰
+```
+
+(이름은 아카이브의 지금 이름을 따른다 — 아카이브는 import만 바꾸면 된다. 공개 범위는 걸음 4에서 정리하되 아카이브 화면이 쓰는 것은 모두 낸다.)
+
+## 먼저 쓸 검사
+
+- **엔진 `crates/index/tests/window.rs`**
+  - 없는 폴더 · 빈 폴더 → `no_library`, 폴더 · 파일이 생기지 않음. 남의 파일 → `not_a_library`.
+  - 아카이브가 꺼진 서재: 열고 · 묻고 · 닫은 뒤 `HistoryCore/`의 파일 목록 · 크기 · 고친 때가 그대로(곁 파일 치움, R4).
+  - 아카이브가 켜진 서재(같은 시험 안의 쓰는 `Engine`): 읽는 동안 쓰는 쪽이 저장 → 다음 질의에 보임 · 읽기가 쓰기를 막지 않음.
+  - `docs_for_entity`: 링크 · 띠 둘 다 · NFD로 물어도 · NFD로 적은 띠도(R5) · 지운 문서 뺌 · 같은 문서 한 번 · 제목 차례 · `timeline.docs`와 같은 답.
+  - `doc`: 없음 · 지움 → None · 넘겨주기 문서는 따라가지 않고 `model.redirect` · 색인이 낡은 문서는 머리 판으로 그려 답하고 `index.db`는 바이트 그대로.
+  - 색인 없음 · 판 다름 → `docs_for_entity` · `titles_exist` · `search`는 `no_index`, `doc`은 됨.
+  - `titles_exist` · `search`(제목 먼저 · 본문 뒤 · 한 번 · `limit`).
+- **다리 `crates/ffi/tests/window.rs`**: `read_only` 답 칸 · 보통 손잡이와 따로 · 같은 폴더 두 번 같은 손잡이 · 읽기 전용 손잡이로 `doc.save` · `doc.open` · `index.step` → `read_only` · 보통 손잡이로 `window.doc` → `bad_handle` · 답마다 `api_version` 1 · `updated` ISO 꼴 · `model`이 글 그대로.
+- **Dart `packages/history_core/test/window_test.dart`**: 진짜 엔진으로 열고 읽고 닫음 · 값 형 `fromJson` · 없는 서재 오류 code.
+- **`packages/library_view/test/`**: 나무마크 견본(spec/namumark.md 표의 블록 · 인라인 전부)의 모델 → 그려짐(예외 없음) · 링크 · 연표 링크 · 한자 누름이 콜백으로 · 없는 문서 링크는 `exists`로 가름 · 연표 띠는 `strip`이 null이면 「제목 · 범위」 자리 · 한자 카드 · 380 폭에서 넘침 없음.
+
+## 까다로운 곳
+
+1. **WAL과 읽기 전용** — 아카이브가 꺼져 있으면 SQLite가 곁 파일을 만들고(R4), 아카이브가 쓰다 죽어 거두지 않은 WAL이 남았으면 읽기 전용 연결은 되살리지 못할 수 있다 — 그때는 실패(`sqlite`)로 답하고 읽는 쪽은 칸을 뺀다. 읽기 연결이 남의 WAL을 합쳐 넣는(체크포인트) 일이 없게 `query_only`와 닫을 때 체크포인트 없음을 검사로 묶는다.
+2. **같은 프로세스의 두 열기** — 아카이브 앱 자신이 `window.*`를 부를 일은 없지만, 검사와 작은 앱은 쓰는 손잡이와 읽기 전용 손잡이를 한 프로세스에서 함께 연다. 손잡이 표는 둘을 다른 칸에 두고 `same_folder` 재사용은 같은 갈래끼리만.
+3. **색인 판 문서가 낡음** — `spec/library-format.md` 「색인」은 `user_version` = 1이라 적었지만 코드(`crates/index/src/store.rs`의 `FORMAT`)는 2다. 걸음 2에서 문서를 고친다(창구가 판으로 거절하는 기준이라).
+4. **모델 글 그대로** — `window.doc`의 `model`은 `doc.open`처럼 풀지 않고 끼운다(`Reply::WithModel`) — 깊게 중첩된 모델(P2-2 미룬 것).
+5. **`library_view` 옮기기와 아카이브 화면** — 토큰 · 아이콘 · 글꼴을 옮기면서 그림이 한 픽셀도 바뀌지 않아야 한다(검사기 · 위젯 검사 · 스크린숏). 옮기는 동안 아카이브는 `lib/src/view`의 옮긴 파일을 지우고 패키지를 import(걸음 5).
+6. **두 가지가 함께 간다** — 아카이브 `remake-7-link`는 이 가지의 엔진 · 패키지를 기대한다. 아카이브 CI는 `HISTORYCORE_REF`(= `main`)의 HistoryCore로 지으므로, **합칠 때는 HistoryCore를 먼저** main에 넣어야 아카이브 CI가 초록이다(감독).
+7. **작업 폴더의 정션** — 아카이브의 `path: ../HistoryCore/...`와 `peek_test`의 `Directory.current.parent\HistoryCore`가 작업 폴더 안에서는 `C:/claude/HistoryArchive/.claude/worktrees/HistoryCore`를 가리킨다 — 그 자리에 이 작업 폴더로 가는 디렉터리 정션을 두었다(`mklink /J`). `pubspec_overrides`는 쓰지 않는다(절대 경로가 `pubspec.lock`에 들어감). 치울 때는 `cmd /c rmdir`(`/s` 없이 — 정션만 지움).
+
+## 진행(걸음 표시)
+
+전체 걸음은 두 저장소에 걸친 아홉이다. 이 저장소가 맡는 걸음은 1 · 2 · 3 · 4 · 8 · 9(5 · 6 · 7은 아카이브).
+
+| 걸음 | 무엇 | 상태 |
+| --- | --- | --- |
+| 1 | 작업 폴더 · 정션 · `spec/windows-api.md` · `spec/README.md` · `spec/engine-api.md` 예정 줄 · `README.md` · 이 계획 | **끝**(2026-10-25) |
+| 2 | 엔진: 읽기 전용 열기(`Window`) · `window.*` · 오류 코드 셋 · 띠 항목ID NFC(R5) · `spec/library-format.md` 색인 판 | 기다림 |
+| 3 | 다리 op · Dart `LibraryWindow` · 엔진 dll 짓기(`tools/build-native.ps1`) · `spec/engine-api.md` 예정 → 됨 | 기다림 |
+| 4 | `packages/library_view` 0.1.0(R6 · R7 · R8) · `history_core` 0.1.0 | 기다림 |
+| 8 | 함께 시험: 아카이브 작은 앱이 읽기 전용으로 peek · HistoryTime 임시 길(`shelf.docs`)과 같은 답인지 교차 확인 · 릴리스 빌드 | 기다림 |
+| 9 | 마무리: 새 검토자 · 넓은 검사(`cargo test --locked --workspace` · `clippy` · `flutter test` 두 패키지) · 보고 · 인수인계 · 넘길 것 | 기다림 |
