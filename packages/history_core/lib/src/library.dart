@@ -28,6 +28,10 @@ class LibraryInfo {
       : device = i.device,
         format = i.format,
         folder = i.folder;
+  LibraryInfo._withDevice(LibraryInfo i, this.device)
+      : library = i.library,
+        format = i.format,
+        folder = i.folder;
   final String library;
   final String device;
   final int format;
@@ -41,10 +45,14 @@ class Saved {
       : doc = j['doc'] as String,
         rev = j['rev'] as String,
         hlc = j['hlc'] as int,
-        changed = j['changed'] as bool;
+        changed = j['changed'] as bool,
+        head = (j['head'] as String?) ?? j['rev'] as String;
   final String doc;
   final String rev;
   final int hlc;
+
+  /// 저장 뒤 지금 머리 — 보통 [rev]. 충돌 중이던 문서를 고쳐 다른 잎과 저절로 합쳤으면 합친 판이니, 편집기는 그 판의 본문으로 다시 맞춘다.
+  final String head;
 
   /// 거짓이면 본문이 같아 판을 더하지 않았다.
   final bool changed;
@@ -54,9 +62,13 @@ class Renamed {
   Renamed._(Map<String, dynamic> j)
       : rev = j['rev'] as String,
         hlc = j['hlc'] as int,
-        redirect = j['redirect'] as String?;
+        redirect = j['redirect'] as String?,
+        head = (j['head'] as String?) ?? j['rev'] as String;
   final String rev;
   final int hlc;
+
+  /// [Saved.head]와 같다.
+  final String head;
 
   /// 옛 제목에 남긴 넘겨주기 문서.
   final String? redirect;
@@ -437,6 +449,13 @@ class Library {
   Future<void> join(String library) async {
     await _call('sync.join', {'library': library});
     _info = LibraryInfo._joined(_info, library);
+  }
+
+  /// 새 기기 ID — 자료 폴더 복사 · 되살린 ZIP으로 두 곳이 한 ID를 쓰게 됐을 때(spec/drive-format.md 6절). 옛 ID의 판은 물려받는다.
+  Future<String> rotateDevice() async {
+    final device = (await _call('sync.rotate'))['device'] as String;
+    _info = LibraryInfo._withDevice(_info, device);
+    return device;
   }
 
   /// 서재 원본의 한 때 사본과 읽어보기를 ZIP 하나로 [path]에.

@@ -30,7 +30,7 @@ fn table() -> MutexGuard<'static, Open> {
 type Answer = Result<Value, Value>;
 
 const LIBRARY_OPS: [&str; 9] = ["library.counts", "doc.create", "doc.save", "doc.rename", "doc.delete", "doc.get", "doc.by_title", "doc.history", "rev.get"];
-const SYNC_OPS: [&str; 5] = ["sync.export", "sync.apply", "sync.status", "sync.join", "library.backup"];
+const SYNC_OPS: [&str; 6] = ["sync.export", "sync.apply", "sync.status", "sync.join", "sync.rotate", "library.backup"];
 const INDEX_OPS: [&str; 11] =
     ["titles.exist", "search.titles", "search.body", "tree.children", "links.back", "links.wanted", "home.aggregates", "stats.library", "timeline.docs", "index.status", "index.step"];
 
@@ -130,7 +130,7 @@ fn with_engine<T>(req: &Value, f: impl FnOnce(&mut Engine) -> Result<T, Value>) 
 }
 
 fn saved(s: &Saved) -> Value {
-    json!({"ok": true, "doc": s.doc.to_string(), "rev": s.rev.to_string(), "hlc": s.hlc.0, "changed": s.changed})
+    json!({"ok": true, "doc": s.doc.to_string(), "rev": s.rev.to_string(), "hlc": s.hlc.0, "changed": s.changed, "head": s.head.to_string()})
 }
 
 fn doc_json(d: &Doc) -> Value {
@@ -190,7 +190,7 @@ fn run(op: &str, e: &mut Engine, req: &Value) -> Answer {
         "doc.rename" => {
             let keep = req.get("keep_redirect").and_then(Value::as_bool).unwrap_or(true);
             let r = e.rename(doc_id(req, "doc")?, rev_id(req, "base")?, text(req, "title")?, keep, optional_text(req, "message")).map_err(fail)?;
-            Ok(json!({"ok": true, "rev": r.rev.to_string(), "hlc": r.hlc.0, "redirect": r.redirect.map(|d| d.to_string())}))
+            Ok(json!({"ok": true, "rev": r.rev.to_string(), "hlc": r.hlc.0, "head": r.head.to_string(), "redirect": r.redirect.map(|d| d.to_string())}))
         }
         "doc.get" => {
             let id = doc_id(req, "doc")?;
@@ -266,6 +266,10 @@ fn run_sync(op: &str, e: &mut Engine, req: &Value) -> Answer {
             let library = LibraryId::parse(text(req, "library")?).ok_or_else(|| bad("`library`가 UUID가 아님"))?;
             e.join(library).map_err(fail)?;
             Ok(json!({"ok": true, "library": library.to_string()}))
+        }
+        "sync.rotate" => {
+            let device = e.lib.rotate_device().map_err(fail)?;
+            Ok(json!({"ok": true, "device": device.to_string()}))
         }
         "library.backup" => {
             e.lib.backup(Path::new(text(req, "path")?)).map_err(fail)?;

@@ -127,7 +127,7 @@ impl Library {
         }
         insert_doc(&tx, doc, ns, &title, rev, hlc)?;
         tx.commit()?;
-        Ok(Saved { doc, rev, hlc, changed: true })
+        Ok(Saved { doc, rev, hlc, changed: true, head: rev })
     }
 
     pub fn save(&mut self, doc: DocId, base: RevId, body: &str, message: &str) -> Result<Saved> {
@@ -139,7 +139,7 @@ impl Library {
             return Err(Error::StaleBase { head: h.head });
         }
         if !h.deleted && read_body(&tx, h.head)? == body {
-            return Ok(Saved { doc, rev: h.head, hlc: h.updated, changed: false });
+            return Ok(Saved { doc, rev: h.head, hlc: h.updated, changed: false, head: h.head });
         }
         let (rev, hlc) = (RevId::new(), self.clock.now());
         insert_rev(&tx, device, hlc, &NewRev { id: rev, doc, parent: Some(h.head), kind: RevKind::Content, ns: h.ns, title: &h.title, message, body })?;
@@ -147,10 +147,10 @@ impl Library {
             return Err(Error::Injected);
         }
         tx.execute("UPDATE doc SET head = ?2, updated = ?3, deleted = 0 WHERE id = ?1", params![doc, rev, hlc])?;
-        let merged = crate::sync::after_local_write(&tx, doc, device)?;
+        let (merged, head) = crate::sync::after_local_write(&tx, doc, device, rev)?;
         tx.commit()?;
         self.observe(merged);
-        Ok(Saved { doc, rev, hlc, changed: true })
+        Ok(Saved { doc, rev, hlc, changed: true, head })
     }
 
     /// 충돌 중이던 문서를 고쳐 합친 판이 생겼으면 시계를 그 뒤로.
@@ -198,7 +198,7 @@ impl Library {
                 let (doc, rev, hlc) = (DocId::new(), RevId::new(), self.clock.now());
                 insert_rev(&tx, device, hlc, &NewRev { id: rev, doc, parent: None, kind: RevKind::Content, ns: *ns, title, message: "", body })?;
                 insert_doc(&tx, doc, *ns, title, rev, hlc)?;
-                out.push(Saved { doc, rev, hlc, changed: true });
+                out.push(Saved { doc, rev, hlc, changed: true, head: rev });
             }
             tx.commit()?;
         }
@@ -235,10 +235,10 @@ impl Library {
         if self.fail_after_rev {
             return Err(Error::Injected);
         }
-        let merged = crate::sync::after_local_write(&tx, doc, device)?;
+        let (merged, head) = crate::sync::after_local_write(&tx, doc, device, rev)?;
         tx.commit()?;
         self.observe(merged);
-        Ok(Renamed { rev, hlc, redirect })
+        Ok(Renamed { rev, hlc, head, redirect })
     }
 
     pub fn delete(&mut self, doc: DocId, base: RevId, message: &str) -> Result<Saved> {
@@ -249,7 +249,7 @@ impl Library {
             return Err(Error::StaleBase { head: h.head });
         }
         if h.deleted {
-            return Ok(Saved { doc, rev: h.head, hlc: h.updated, changed: false });
+            return Ok(Saved { doc, rev: h.head, hlc: h.updated, changed: false, head: h.head });
         }
         let (rev, hlc) = (RevId::new(), self.clock.now());
         insert_rev(&tx, device, hlc, &NewRev { id: rev, doc, parent: Some(h.head), kind: RevKind::Deleted, ns: h.ns, title: &h.title, message, body: "" })?;
@@ -257,10 +257,10 @@ impl Library {
             return Err(Error::Injected);
         }
         tx.execute("UPDATE doc SET head = ?2, updated = ?3, deleted = 1 WHERE id = ?1", params![doc, rev, hlc])?;
-        let merged = crate::sync::after_local_write(&tx, doc, device)?;
+        let (merged, head) = crate::sync::after_local_write(&tx, doc, device, rev)?;
         tx.commit()?;
         self.observe(merged);
-        Ok(Saved { doc, rev, hlc, changed: true })
+        Ok(Saved { doc, rev, hlc, changed: true, head })
     }
 
     pub fn get(&self, doc: DocId) -> Result<Option<Doc>> {

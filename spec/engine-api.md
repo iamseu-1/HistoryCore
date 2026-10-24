@@ -43,6 +43,8 @@
 | `rev.get` | `handle` · `rev` | `revision`: 위 판 정보 + `body` |
 | `namumark.parse` | `text` · `title`? · `ns`?(`template`이면 틀 문서로 봄) · `handle`?(있으면 그 서재의 틀을 펼침) | `model`: 그리기 모델(spec/namumark.md). 틀을 읽다 오류가 나면 「없는 틀」로 그리지 않고 오류로 답한다 |
 
+`doc.create` · `doc.save` · `doc.delete`의 답과 `doc.rename`의 답에는 `head`(쓴 뒤 지금 머리)도 있다 — 보통 `rev`와 같고, 충돌 중인 문서를 고쳐 저절로 합쳤으면 합친 판이다(spec/drive-format.md 5-3).
+
 `doc.*`의 쓰는 op는 서재에 커밋한 뒤 같은 호출 안에서 그 문서를 색인한다(색인이 실패해도 저장은 그대로 — 그 문서는 낡음으로 남아 `index.step`이 다시 한다).
 
 ### 색인 op (P2-3)
@@ -73,7 +75,8 @@
 | `sync.export` | `handle` · `after_seq` · `no` | `pack`: base64 | null(내보낼 판 없음) · `seq`: 묶음의 마지막 판 번호(없으면 `after_seq`) · `count` · `more`: 상한(500판 · 본문 4MB)에 닿아 남은 판이 있음 |
 | `sync.apply` | `handle` · `pack` | `added` · `skipped` · `held`(지금 보류 중인 판 수) · `forked` · `merged` · `conflicts`: [문서 ID] · `revived`: [문서 ID]. 받은 문서는 같은 호출에서 색인한다 |
 | `sync.status` | `handle` · `after_seq` | `library` · `device` · `seq` · `pending`(`after_seq` 뒤 이 기기가 만든 판 수) · `held` · `conflicts`(충돌 문서 수) |
-| `sync.join` | `handle` · `library` | `library` — 이 서재를 드라이브의 서재로 합류(색인 그대로, 보류 판 비움) |
+| `sync.join` | `handle` · `library` | `library` — 이 서재를 드라이브의 서재로 합류(색인 그대로, 보류 판 비움, 다른 기기의 판을 물려받음) |
+| `sync.rotate` | `handle` | `device` — 새 기기 ID(옛 ID의 판은 물려받음, spec/drive-format.md 6-1) |
 | `library.backup` | `handle` · `path` | — `path`에 ZIP(`library.db` 사본 · `읽어보기.txt`). 다 쓴 뒤 이름을 바꾼다 |
 
 ## 예정

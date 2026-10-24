@@ -32,15 +32,15 @@ UTF-8 JSON을 zstd(레벨 3)로 누른 것.
 }
 ```
 
-- `revs`는 `rev.seq` 차례이고 모두 `device == 묶음의 device`(합친 판도 합친 기기의 것).
+- `revs`는 `rev.seq` 차례. 보통 모두 `device == 묶음의 device`(합친 판도 합친 기기의 것)이고, 물려받은 기기의 판(6절)이면 그 판의 `device` 그대로다. 받는 쪽은 `device`로 거르지 않는다.
 - `kind`: 0 내용 · 1 지움(`body`는 빈 글). `ns`: `doc` · `category` · `template` · `file` · `front`.
 - 한 묶음은 많아야 **500판 또는 본문 4MB**(먼저 닿는 것, 판 하나가 4MB를 넘으면 그 판 하나로). 남으면 답의 `more`가 참이고 앱은 다음 번호로 이어서 낸다.
 
 ## 3. 내보내기(`sync.export`)
 
-- `after_seq` 뒤에 이 기기가 만든 판(`rev.device == meta.device` · `rev.seq > after_seq`)을 `seq` 차례로. 없으면 `pack: null`.
+- `after_seq` 뒤의 **내 판**을 `seq` 차례로. 없으면 `pack: null`. 내 판 = 이 기기가 만든 판(`rev.device == meta.device`)과, 물려받은 기기의 판 가운데 물려받을 때까지 든 것(`adopted.device == rev.device` · `rev.seq <= adopted.upto`, 6절).
 - 답의 `seq`는 묶음에 든 마지막 판의 `rev.seq`. 번호 `no`는 앱이 준다(엔진은 번호를 모른다).
-- `sync.status`의 `pending`은 `after_seq` 뒤에 이 기기가 만든 판 수다. 받은 판도 `seq`를 올리므로 `seq - after_seq`가 아니다.
+- `sync.status`의 `pending`은 `after_seq` 뒤의 내 판 수다. 받은 판도 `seq`를 올리므로 `seq - after_seq`가 아니다.
 
 ## 4. 적용(`sync.apply`)
 
@@ -69,17 +69,24 @@ UTF-8 JSON을 zstd(레벨 3)로 누른 것.
 
 - 제목은 값 하나로 본다: 한쪽만 바꿨으면 그쪽, 둘이 같으면 그것, 둘이 다르게 바꿨으면 충돌.
 - 본문은 줄 단위(줄끝 `\n` 포함, 마지막 줄은 줄끝 없이도 한 줄) diff3. 조상과 두 쪽 모두에서 짝지어진 줄 사이의 덩이마다: 한쪽만 바뀌었으면 그쪽, 둘이 같게 바뀌었으면 그것, 다르게 바뀌었으면 충돌. 짝짓기는 조상 ↔ 한쪽의 가장 긴 공통 부분열(Myers, `similar` 크레이트 — 판 고정).
-- 합친 판: `parent` · `parent2` = 두 잎을 ID 차례로, `id` = 두 앞 판 ID(차례대로 32바이트)의 UUIDv5(이름공간 `6ba7b811-9dad-11d1-80b4-00c04fd430c8`)를 바탕으로 앞 6바이트에 큰 앞 판 hlc의 ms를 넣은 UUIDv8, `hlc` = 큰 앞 판 hlc + 1, `title` = 합친 제목, `message` = `자동 합침`, `kind` 0, `device` = 합친 기기.
+- 합친 판: `parent` · `parent2` = 두 잎을 ID 차례로, `id` = 이름 `merge-v1` + 두 앞 판 ID(차례대로 16바이트씩)의 UUIDv5(이름공간 `6ba7b811-9dad-11d1-80b4-00c04fd430c8`)를 바탕으로 앞 6바이트에 큰 앞 판 hlc의 ms를 넣은 UUIDv8, `hlc` = 큰 앞 판 hlc + 1, `title` = 합친 제목, `message` = `자동 합침`, `kind` 0, `device` = 합친 기기.
+- 합치기 규칙(diff3 · 공통 조상 · `similar` 판)을 바꾸면 이름의 `merge-v1`을 올린다 — 판이 다른 엔진끼리 같은 ID로 다른 본문을 만들지 않게. `crates/library/src/sync.rs`의 정답지 검사가 지킨다.
 - **같은 두 잎이면 어느 기기에서든 `id` · `hlc` · `title` · `body`가 같다.** `device`만 다를 수 있다 — 먼저 받은 쪽은 ID로 건너뛰므로 기기마다 그 판의 `device`가 다를 수 있다(수렴은 `device`를 뺀 열로 본다).
 
 ### 5-3. 충돌 풀기
 
 `doc.get`의 `conflict`는 머리가 아닌 내용 잎들의 ID다. 앱이 나란히 견주어 저장할 때 `doc.save`에 `merge`(다른 잎 ID)를 주면 `parent` = 머리 · `parent2` = 그 잎인 판이 생긴다. 잎이 하나가 되면 충돌 목록에서 빠진다.
 
+충돌 중인 문서를 이 기기에서 고치면(저장 · 견주어 합침 · 이름 바꾸기 · 지우기) 받는 기기와 같은 규칙으로 그 자리에서 머리를 다시 정한다 — 남은 잎과 저절로 합쳐질 수 있다. 그래서 쓰는 op의 답에 `head`(지금 머리)가 있다. `head != rev`이면 앱은 그 판의 본문으로 편집기를 다시 맞춘다.
+
 ## 6. 합류(`sync.join`)
 
-서재 ID는 기기마다 처음 열 때 생긴다. 드라이브에 다른 서재가 있으면 앱은 사용자에게 묻고 `sync.join(library)`로 이 서재의 `meta.library`를 그 ID로 바꾼다(색인 `index.db`의 `meta.library`도 함께, 보류 판은 비운다). 이 기기의 판은 그대로 남아 다음 내보내기에서 모두 나간다(`after_seq` 0부터).
+서재 ID는 기기마다 처음 열 때 생긴다. 드라이브에 다른 서재가 있으면 앱은(서재가 비었으면 묻지 않고, 아니면 사용자에게 묻고) `sync.join(library)`로 이 서재의 `meta.library`를 그 ID로 바꾼다(색인 `index.db`의 `meta.library`도 함께, 보류 판은 비운다). 이 기기에 있는 **다른 기기의 판도 물려받는다**(`adopted` 표에 그 기기와 지금의 마지막 `rev.seq`) — 다음 내보내기(`after_seq` 0부터)에 이 기기의 판과 함께 모두 나가, 받아 둔 문서도 새 서재로 가고 그 위에 고친 판이 보류되지 않는다.
+
+### 6-1. 새 기기 ID(`sync.rotate`)
+
+자료 폴더를 복사했거나 내보낸 ZIP을 되살리면 두 곳이 한 기기 ID를 쓴다 — 서로 자기 묶음이라 받지 않아 갈라진다. 앱은 내 폴더(`log/<기기>`)에 내가 올리지 않은 묶음이 보이면 `sync.rotate`로 새 기기 ID를 받고 장부를 비운다. 옛 ID의 지금까지 판은 물려받아 다음 내보내기에 함께 싣고, 그 뒤 옛 ID로 오는 판(복제된 다른 쪽)은 남의 판으로 받는다. `library.backup`의 사본은 처음부터 새 기기 ID다.
 
 ## 7. 보내지 않는 것 · 내보내기
 
-`index.db` · 기기 상태 파일 · 자전 · 연표 자료집은 보내지 않는다. `library.backup(path)`은 드라이브와 따로, `library.db`의 한 때 사본(`VACUUM INTO`)과 `읽어보기.txt`를 ZIP 하나로 쓴다.
+`index.db` · 기기 상태 파일 · 자전 · 연표 자료집은 보내지 않는다. `library.backup(path)`은 드라이브와 따로, `library.db`의 한 때 사본(`VACUUM INTO`, 기기 ID는 새로 — 6-1)과 `읽어보기.txt`를 ZIP 하나로 쓴다.

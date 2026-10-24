@@ -89,3 +89,15 @@ fn a_backup_lands_where_asked() {
     ok(call(json!({"op": "library.backup", "handle": a, "path": out.to_str().unwrap()})));
     assert!(std::fs::metadata(&out).unwrap().len() > 100);
 }
+
+#[test]
+fn rotate_gives_a_new_device_and_saves_report_the_head() {
+    let (a, _) = open("새 기기");
+    let created = ok(call(json!({"op": "doc.create", "handle": a, "ns": "doc", "title": "임진왜란", "body": "x"})));
+    assert_eq!(created["head"], created["rev"]);
+    let before = ok(call(json!({"op": "sync.status", "handle": a, "after_seq": 0})))["device"].clone();
+    let r = ok(call(json!({"op": "sync.rotate", "handle": a})));
+    assert_ne!(r["device"], before);
+    let st = ok(call(json!({"op": "sync.status", "handle": a, "after_seq": 0})));
+    assert_eq!((st["device"].clone(), st["pending"].as_u64()), (r["device"].clone(), Some(1)), "옛 ID의 판을 물려받는다");
+}

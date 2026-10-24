@@ -102,6 +102,8 @@ pub struct Saved {
     pub rev: RevId,
     pub hlc: Hlc,
     pub changed: bool,
+    /// 저장 뒤 지금 머리 — 보통 `rev`. 충돌 중이던 문서를 고쳐 다른 잎과 저절로 합쳤으면 합친 판(spec/drive-format.md 5-3).
+    pub head: RevId,
 }
 
 /// 한꺼번에 들일 문서 하나(`Library::import`).
@@ -116,6 +118,8 @@ pub struct NewDoc {
 pub struct Renamed {
     pub rev: RevId,
     pub hlc: Hlc,
+    /// [`Saved::head`]와 같다.
+    pub head: RevId,
     /// 옛 제목에 남긴 넘겨주기 문서.
     pub redirect: Option<DocId>,
 }

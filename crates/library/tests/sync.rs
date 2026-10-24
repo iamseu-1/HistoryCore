@@ -337,6 +337,12 @@ fn act(rng: &mut Rng, d: &mut Device) {
         d.lib.create(Namespace::Doc, &format!("문서 {n}"), "하나\n둘\n셋\n넷\n다섯\n", "").unwrap();
         return;
     }
+    if rng.chance(2) {
+        // 새 기기 ID(복제 감지) — 옛 ID의 판은 물려받아 처음부터 다시 낸다(앱이 장부를 비우듯).
+        d.lib.rotate_device().unwrap();
+        d.sent = 0;
+        return;
+    }
     let doc = get(&d.lib, docs[rng.below(docs.len())]);
     let leaves = d.lib.conflict_leaves(doc.id).unwrap();
     match rng.below(20) {
@@ -450,4 +456,114 @@ fn three_devices_end_up_with_the_same_library() {
     // 검사가 헛돌지 않게 — 씨앗들 가운데 자동 합침과 남은 충돌이 실제로 있었다.
     eprintln!("자동 합침 {merges} · 남은 충돌 {conflicts}");
     assert!(merges > 0 && conflicts > 0, "자동 합침 {merges} · 남은 충돌 {conflicts}");
+}
+
+// ── 최종 검토 고치기(C1 · I1 · I3) ──
+
+#[test]
+fn a_new_device_id_still_sends_what_the_old_one_wrote() {
+    // C1 — 기기 ID가 복제됐다고 보이면 새 ID를 받는다. 옛 ID의 판은 물려받아 다음 내보내기에 함께 싣는다.
+    let (mut a, mut b, ..) = pair("새 기기 ID");
+    let old = a.info().device;
+    a.create(Namespace::Doc, "임진왜란", "첫 판", "").unwrap();
+    a.create(Namespace::Doc, "병자호란", "첫 판", "").unwrap();
+    let new = a.rotate_device().unwrap();
+    assert_ne!(new, old);
+    assert_eq!(a.info().device, new);
+    a.create(Namespace::Doc, "정유재란", "새 ID의 판", "").unwrap();
+    assert_eq!(a.sync_status(0).unwrap().pending, 3, "물려받은 판도 쌓인 판");
+    let e = a.export(0, 1).unwrap().unwrap();
+    assert_eq!(e.count, 3);
+    b.apply(&e.pack).unwrap();
+    assert_eq!(b.counts().unwrap().total(), 3);
+    let r = a.rotate_device().unwrap();
+    assert_ne!(r, new);
+}
+
+#[test]
+fn revisions_received_after_adopting_stay_someone_elses() {
+    let (mut a, mut b, ..) = pair("물려받은 뒤");
+    let s = b.create(Namespace::Doc, "임진왜란", "나의 판", "").unwrap();
+    a.apply(&b.export(0, 1).unwrap().unwrap().pack).unwrap();
+    a.rotate_device().unwrap(); // 옛 ID만 물려받는다 — 나의 판은 남의 것 그대로
+    assert_eq!(a.sync_status(0).unwrap().pending, 0);
+    let after = b.sync_status(0).unwrap().seq;
+    b.save(s.doc, s.rev, "나가 또 고침", "").unwrap();
+    a.apply(&b.export(after, 2).unwrap().unwrap().pack).unwrap();
+    assert_eq!(a.sync_status(0).unwrap().pending, 0, "받은 판은 쌓인 판이 아니다");
+}
+
+#[test]
+fn a_restored_backup_is_a_new_device_and_catches_up() {
+    // C1 장면 1 — 내보낸 뒤 더 고치고 올린 기기를 그 ZIP으로 되살린다.
+    let (mut a, mut b, ..) = pair("복원");
+    let s = a.create(Namespace::Doc, "임진왜란", "첫 판", "").unwrap();
+    let p1 = a.export(0, 1).unwrap().unwrap();
+    let zip = temp("복원 파일").join("서재.zip");
+    a.backup(&zip).unwrap();
+    a.save(s.doc, s.rev, "둘째 판", "").unwrap();
+    let p2 = a.export(p1.seq, 2).unwrap().unwrap();
+    b.apply(&p1.pack).unwrap();
+    b.apply(&p2.pack).unwrap();
+    let dir = temp("복원 자리");
+    std::fs::create_dir_all(dir.join(history_library::FOLDER)).unwrap();
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&zip).unwrap()).unwrap();
+    let mut f = std::fs::File::create(dir.join(history_library::FOLDER).join(history_library::FILE)).unwrap();
+    std::io::copy(&mut archive.by_name("library.db").unwrap(), &mut f).unwrap();
+    drop(f);
+    let mut restored = Library::open(&dir).unwrap();
+    assert_ne!(restored.info().device, a.info().device, "되살린 서재는 새 기기");
+    assert_eq!(restored.info().library, a.info().library);
+    // 옛 기기의 묶음을 남의 것으로 받아 따라잡고, 그 위에 고친 판은 나간다.
+    restored.apply(&p2.pack).unwrap();
+    let d = get(&restored, s.doc);
+    assert_eq!(d.body, "둘째 판");
+    let mine = restored.save(s.doc, d.head, "되살린 뒤 고침", "").unwrap();
+    let e = restored.export(0, 1).unwrap().unwrap();
+    assert_eq!(e.count, 2, "물려받은 첫 판 + 되살린 뒤의 판");
+    b.apply(&e.pack).unwrap();
+    assert_eq!(get(&b, s.doc).head, mine.rev);
+}
+
+#[test]
+fn joining_sends_what_this_device_received_from_others() {
+    // I1 — 다른 서재에서 받아 둔 문서도 새 서재로 간다. 그 위에 고친 판도 보류되지 않는다.
+    let (mut x, mut t, ..) = pair("합류 옛 서재");
+    let s = x.create(Namespace::Doc, "임진왜란", "가의 문서", "").unwrap();
+    t.apply(&x.export(0, 1).unwrap().unwrap().pack).unwrap();
+    let mut c = Library::open(&temp("합류 새 서재")).unwrap();
+    c.create(Namespace::Doc, "병자호란", "다의 문서", "").unwrap();
+    t.join(c.info().library).unwrap();
+    let e = t.export(0, 1).unwrap().unwrap();
+    assert_eq!(e.count, 1, "받아 둔 판도 싣는다");
+    c.apply(&e.pack).unwrap();
+    assert_eq!(get(&c, s.doc).body, "가의 문서");
+    let after = t.sync_status(0).unwrap().seq;
+    t.save(s.doc, s.rev, "합류 뒤 고침", "").unwrap();
+    let r = c.apply(&t.export(after, 2).unwrap().unwrap().pack).unwrap();
+    assert_eq!((r.added, r.held), (1, 0));
+}
+
+#[test]
+fn a_save_that_auto_merges_reports_the_real_head() {
+    // I3 — 충돌 중인 문서를 고쳐 저장했더니 다른 잎과 저절로 합쳐지면, 돌려준 머리가 합친 판이다.
+    let (mut a, mut b, ..) = pair("저장 뒤 머리");
+    let s = a.create(Namespace::Doc, "임진왜란", "하나\n둘\n셋\n넷\n", "").unwrap();
+    exchange(&mut a, &mut b);
+    a.save(s.doc, s.rev, "하나\n가\n셋\n넷\n", "").unwrap();
+    b.save(s.doc, s.rev, "하나\n나\n셋\n넷\n", "").unwrap();
+    a.apply(&b.export(0, 1).unwrap().unwrap().pack).unwrap();
+    let other = a.conflict_leaves(s.doc).unwrap();
+    assert_eq!(other.len(), 1);
+    let theirs = a.revision(other[0]).unwrap().unwrap().body;
+    // 겹친 줄을 처음대로 되돌리고 떨어진 줄을 고친다 — 남은 잎과 저절로 합쳐진다.
+    let head = get(&a, s.doc).head;
+    let mine = a.save(s.doc, head, "하나\n둘\n셋\n넷!\n", "").unwrap();
+    let d = get(&a, s.doc);
+    assert_eq!(mine.head, d.head, "돌려준 머리가 지금 머리");
+    assert_ne!(mine.head, mine.rev, "저절로 합쳤다");
+    assert_eq!(d.body, theirs.replace("넷\n", "넷!\n"));
+    assert!(a.conflict_leaves(s.doc).unwrap().is_empty());
+    let plain = a.save(s.doc, d.head, "하나\n나\n셋\n넷!!\n", "").unwrap();
+    assert_eq!(plain.head, plain.rev, "겹침이 없으면 같다");
 }

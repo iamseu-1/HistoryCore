@@ -15,7 +15,14 @@ use std::path::Path;
 pub(crate) const SYNC_SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS held(id BLOB PRIMARY KEY, rev TEXT NOT NULL) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS conflict(doc BLOB PRIMARY KEY) WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS adopted(device BLOB PRIMARY KEY, upto INTEGER NOT NULL) WITHOUT ROWID;
 ";
+
+/// 내 판 — 이 기기의 판과, 물려받은 기기의 그때까지 판(합류 · 새 기기 ID, spec 3절).
+const MINE: &str = "(device = ?2 OR EXISTS (SELECT 1 FROM adopted a WHERE a.device = rev.device AND rev.seq <= a.upto))";
+
+/// 합친 판 ID의 이름에 넣는 합치기 판 — diff3 · 공통 조상 규칙이 바뀌면 올린다(다른 판끼리 같은 ID로 다른 본문을 만들지 않게).
+const MERGE_VERSION: &[u8] = b"merge-v1";
 
 const PACK_FORMAT: i64 = 1;
 /// 한 묶음의 상한 — 판 수 · 본문 바이트, 먼저 닿는 것.
@@ -232,9 +239,9 @@ fn merge_value<'a>(base: Option<&str>, a: &'a str, b: &'a str) -> Option<&'a str
 
 /// 합친 판의 ID — 같은 두 앞 판이면 어느 기기에서든 같다(spec 5-2).
 fn merge_id(p1: RevId, p2: RevId, hlc: Hlc) -> RevId {
-    let mut name = [0u8; 32];
-    name[..16].copy_from_slice(p1.as_bytes());
-    name[16..].copy_from_slice(p2.as_bytes());
+    let mut name = MERGE_VERSION.to_vec();
+    name.extend_from_slice(p1.as_bytes());
+    name.extend_from_slice(p2.as_bytes());
     let mut bytes = *uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, &name).as_bytes();
     bytes[..6].copy_from_slice(&hlc.wall_ms().to_be_bytes()[2..]);
     RevId(uuid::Builder::from_custom_bytes(bytes).into_uuid())
@@ -305,11 +312,13 @@ pub(crate) fn rehead(db: &Connection, doc: DocId, device: DeviceId) -> Result<Re
 }
 
 /// 이 기기에서 고친 문서가 충돌 중이었으면 머리를 다시 정한다 — 받는 기기와 같은 규칙이어야 모인다.
-pub(crate) fn after_local_write(db: &Connection, doc: DocId, device: DeviceId) -> Result<Option<Hlc>> {
+/// (합친 판의 마지막 시각, 지금 머리) — 충돌이 아니었으면 머리는 방금 더한 `rev`.
+pub(crate) fn after_local_write(db: &Connection, doc: DocId, device: DeviceId, rev: RevId) -> Result<(Option<Hlc>, RevId)> {
     if !in_conflict(db, doc)? {
-        return Ok(None);
+        return Ok((None, rev));
     }
-    Ok(rehead(db, doc, device)?.last)
+    let last = rehead(db, doc, device)?.last;
+    Ok((last, load_head(db, doc)?.head))
 }
 
 fn parse_rev(p: &PackRev) -> Result<Row<'_>> {
@@ -339,7 +348,7 @@ impl Library {
     pub fn export(&self, after_seq: i64, no: u64) -> Result<Option<Exported>> {
         let device = self.info.device;
         let mut st = self.db.prepare_cached(
-            "SELECT seq, id, doc, parent, parent2, hlc, kind, ns, title, message, len, body FROM rev WHERE seq > ?1 AND device = ?2 ORDER BY seq",
+            &format!("SELECT seq, id, doc, parent, parent2, hlc, kind, ns, title, message, len, body, device FROM rev WHERE seq > ?1 AND {MINE} ORDER BY seq"),
         )?;
         let mut rows = st.query(params![after_seq, device])?;
         let (mut revs, mut bytes, mut seq, mut more) = (Vec::new(), 0u64, after_seq, false);
@@ -356,7 +365,7 @@ impl Library {
                 doc: r.get::<_, DocId>(2)?.to_string(),
                 parent: r.get::<_, Option<RevId>>(3)?.map(|p| p.to_string()),
                 parent2: r.get::<_, Option<RevId>>(4)?.map(|p| p.to_string()),
-                device: device.to_string(),
+                device: r.get::<_, DeviceId>(12)?.to_string(),
                 hlc: r.get::<_, Hlc>(5)?.0,
                 kind: if kind == RevKind::Deleted { 1 } else { 0 },
                 ns: ns.code().to_string(),
@@ -380,7 +389,7 @@ impl Library {
         let count = |sql: &str, p: &[&dyn rusqlite::ToSql]| -> Result<u64> { Ok(self.db.prepare_cached(sql)?.query_row(p, |r| r.get::<_, i64>(0))? as u64) };
         Ok(SyncStatus {
             seq: self.last_seq()?,
-            pending: count("SELECT count(*) FROM rev WHERE seq > ?1 AND device = ?2", &[&after_seq, &self.info.device])?,
+            pending: count(&format!("SELECT count(*) FROM rev WHERE seq > ?1 AND {MINE}"), &[&after_seq, &self.info.device])?,
             held: count("SELECT count(*) FROM held", &[])?,
             conflicts: count("SELECT count(*) FROM conflict", &[])?,
         })
@@ -495,19 +504,33 @@ impl Library {
         let (rev, hlc) = (RevId::new(), self.clock.now());
         insert_row(&tx, &Row { id: rev, doc, parent: Some(base), parent2: Some(merge), device, hlc, kind: RevKind::Content, ns: h.ns, title: &h.title, message, body })?;
         let last = rehead(&tx, doc, device)?.last;
+        let head = load_head(&tx, doc)?.head;
         tx.commit()?;
         self.clock.observe(last.unwrap_or(hlc));
-        Ok(Saved { doc, rev, hlc, changed: true })
+        Ok(Saved { doc, rev, hlc, changed: true, head })
     }
 
-    /// 드라이브의 서재에 합류한다(6절) — 서재 ID를 바꾸고 보류 판을 비운다. 이 기기의 판은 그대로다.
+    /// 드라이브의 서재에 합류한다(6절) — 서재 ID를 바꾸고 보류 판을 비운다. 이 기기에 있는 다른 기기의 판도 물려받아
+    /// 다음 내보내기에 함께 싣는다 — 받아 둔 문서도 새 서재로 가고, 그 위에 고친 판이 보류되지 않게(최종 검토 I1).
     pub fn join(&mut self, library: LibraryId) -> Result<()> {
         let tx = self.db.transaction()?;
         tx.execute("UPDATE meta SET value = ?1 WHERE key = 'library'", params![library.to_string()])?;
         tx.execute("DELETE FROM held", [])?;
+        adopt(&tx, "SELECT DISTINCT device FROM rev WHERE device != ?1", self.info.device)?;
         tx.commit()?;
         self.info.library = library;
         Ok(())
+    }
+
+    /// 새 기기 ID(6절) — 자료 폴더를 복사했거나 내보낸 ZIP을 되살려 두 곳이 한 ID를 쓰게 됐을 때(최종 검토 C1). 옛 ID의 지금까지 판은
+    /// 물려받아 다음 내보내기에 함께 싣고, 그 뒤 옛 ID로 오는 판(복제된 다른 쪽)은 남의 판으로 받는다.
+    pub fn rotate_device(&mut self) -> Result<DeviceId> {
+        let (old, new) = (self.info.device, DeviceId::new());
+        let tx = self.db.transaction()?;
+        rotate(&tx, old, new)?;
+        tx.commit()?;
+        self.info.device = new;
+        Ok(new)
     }
 
     /// `library.db`의 한 때 사본과 읽어보기를 ZIP 하나로(7절). 다 쓴 뒤에 이름을 바꿔 반쯤 쓴 파일이 남지 않는다.
@@ -515,6 +538,13 @@ impl Library {
         let copy = self.info.folder.join("library.backup.tmp");
         let _ = std::fs::remove_file(&copy);
         self.db.execute("VACUUM INTO ?1", params![copy.to_string_lossy()])?;
+        // 되살린 서재는 새 기기다 — 같은 기기 ID를 쓰면 이 기기가 그 뒤 올린 판을 「내 것」이라 받지 않는다(최종 검토 C1).
+        {
+            let mut c = Connection::open(&copy)?;
+            let tx = c.transaction()?;
+            rotate(&tx, self.info.device, DeviceId::new())?;
+            tx.commit()?;
+        }
         let partial = path.with_extension("zip.tmp");
         let written = (|| -> Result<()> {
             let counts = self.counts()?;
@@ -544,6 +574,22 @@ impl Library {
         std::fs::rename(&partial, path)?;
         Ok(())
     }
+}
+
+/// 지금까지의 판 번호까지 그 기기들을 물려받는다(이미 물려받았으면 더 늦은 번호로). [devices]는 ?1 = 이 기기를 받는 질의.
+fn adopt(db: &Connection, devices: &str, me: DeviceId) -> Result<()> {
+    let upto: i64 = db.query_row("SELECT COALESCE(MAX(seq), 0) FROM rev", [], |r| r.get(0))?;
+    db.execute(
+        &format!("INSERT INTO adopted(device, upto) SELECT device, ?2 FROM ({devices}) WHERE true ON CONFLICT(device) DO UPDATE SET upto = max(upto, excluded.upto)"),
+        params![me, upto],
+    )?;
+    Ok(())
+}
+
+fn rotate(db: &Connection, old: DeviceId, new: DeviceId) -> Result<()> {
+    adopt(db, "SELECT ?1 AS device", old)?;
+    db.execute("UPDATE meta SET value = ?1 WHERE key = 'device'", params![new.to_string()])?;
+    Ok(())
 }
 
 fn zip_error(e: zip::result::ZipError) -> Error {
@@ -580,6 +626,16 @@ mod tests {
         assert_eq!(merge_text(base, "가\n하나\n다\n라\n", "가\n둘\n다\n라\n"), None);
         assert_eq!(merge_text("", "가\n", "나\n"), None, "같은 자리에 다른 글");
         assert_eq!(merge_text("가", "가\n나", "가").as_deref(), Some("가\n나"), "줄끝 없는 마지막 줄");
+    }
+
+    #[test]
+    fn a_merge_id_is_pinned() {
+        // 정답지(최종 검토 I5) — 합친 판 ID가 판마다 바뀌면 기기끼리 같은 ID로 다른 본문을 만든다. 바꿀 때는 MERGE_VERSION을 올린다.
+        let p = |s: &str| crate::RevId::parse(s).unwrap();
+        let id = super::merge_id(p("0192f0a0-0000-7000-8000-000000000001"), p("0192f0a0-0000-7000-8000-000000000002"), crate::Hlc::new(1_792_800_000_000, 3));
+        assert_eq!(id.to_string(), "01a16b35-0800-8649-8284-18c97a7eea5c");
+        let body = merge_text("하나\n둘\n셋\n", "하나!\n둘\n셋\n", "하나\n둘\n셋!\n").unwrap();
+        assert_eq!(body.as_bytes(), "하나!\n둘\n셋!\n".as_bytes());
     }
 
     #[test]

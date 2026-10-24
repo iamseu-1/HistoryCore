@@ -163,6 +163,12 @@ void main() {
     final stranger = Directory.systemTemp.createTempSync('서재 다리 시험 남 ');
     final c = await Library.open(core, stranger.path);
     await expectLater(c.syncApply(fromB.pack), throwsA(isA<WrongLibraryError>().having((e) => e.found, 'found', a.info.library)));
+    expect(s.head, s.rev);
+    final before = b.info.device;
+    final rotated = await b.rotateDevice();
+    expect(rotated, isNot(before));
+    expect(b.info.device, rotated);
+    expect((await b.syncStatus(afterSeq: 0)).pending, 1, reason: '옛 ID의 판을 물려받는다');
     final zip = File('${other.path}${Platform.pathSeparator}내보내기.zip');
     await b.backup(zip.path);
     expect(zip.lengthSync(), greaterThan(100));
