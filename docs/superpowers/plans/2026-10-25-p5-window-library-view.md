@@ -168,6 +168,12 @@ DocContext DocContext.copyWith({...});            // 뛰는 자리(anchors)는 �
 28. **띠 머리의 범위 글도 기원전** — `TimelineStripView`의 머리 「연표 · a–b」는 문서의 범위 글을 그대로 찍어 `범위=-57..-18`이 「연표 · -57–-18」로 보였다. 범위의 해는 연표 창구처럼 서기 0년이 없는 셈이므로(`spec/namumark.md` 띠 줄에 적음) 새 공개 함수 `stripRangeText`가 음수를 「기원전 n」으로 적는다(「연표 · 기원전 57–기원전 18」). 받는 앱의 이름과 겹치지 않음을 먼저 찾아봤다(알게 된 것 24). 양수 범위의 글은 그대로라 표본 스크린숏은 바뀌지 않는다.
 29. **가는 칸은 40해까지만 해마다** — `stripYearLinesMost` = 40. 넘으면 눈금 글 자리(네 개쯤)에만 긋는다. 표본 띠(여덟 해)는 그대로 해마다다. 패키지 검사 47(`blocks_test`에 띠 머리 1 · `timeline_strip_test`에 가는 칸 1 — 고장 넣기로 둘 다 빨강 확인), `flutter analyze` 문제 없음. 판은 0.1.0 그대로(태그 전).
 
+### 걸음 8(아카이브)에서 알게 된 것
+
+30. **본보기 peek가 `LibraryWindow`를 쓴다** — 아카이브 `tools/window/peek.dart`(뼈대 `lib/src/windows_api/peek.dart`의 `PeekedLibrary`)가 `LibraryWindow.open` → `version` · `doc` · `docByTitle` · `titlesExist` · `search` · `docsForEntity` · `close`로 바뀌어, 아카이브가 켜져 있어도 읽는다. 아카이브 검사가 쓰는 다리(`Library`)와 읽는 다리(`LibraryWindow`)를 **따로 된 `HistoryCore` 둘**(같은 dll · 다른 isolate)로 띄워 함께 써 봤다 — 손잡이 표가 Mutex 하나라 문제없고, 읽는 동안 저장 · 지우기가 다음 질의에 보이며, 창구를 닫아도 쓰는 손잡이는 그대로다(옛 보통 열기 peek는 같은 프로세스에서 쓰는 쪽과 같은 폴더를 열면 다리의 `open`이 같은 손잡이를 돌려주므로, 닫을 때 쓰는 쪽 서재까지 닫았다 — 코드로 확인).
+31. **HistoryTime 임시 길과 같은 답** — 아카이브 `test/tool/shelf_cross_test.dart`가 연표 링크가 든 작은 서재에서 `window.docs_for_entity`(다리 op 그대로)와 HistoryTime `shelf.docs`(`archive-tool query`)를 견줘 `id` · `ns` · `title` · `updated` · 차례 · 맞춘 `entity`가 같았다(꺼진 서재 · 쓰는 엔진이 연 채로). 일부러 다른 곳은 spec 9절에 적었다: 자리 꼬리(임시 길만 뗌) · 색인 없음(`found: false` ↔ `no_index`).
+32. **틀로 들인 연표 링크는 항목 색인에 없다** — `timeline_entities`는 펼치기 전 문서를 보므로 `[include(틀:연표 틀, 항목=X)]`의 `[[연표:@항목@]]`은 X로 뽑히지 않는다. 두 길이 같은 색인을 읽어 같은 답이고 spec 8절에 적었다. 틀로만 잇는 문서(표본 서재의 「전쟁 정보」 틀 `연표=` 인자처럼)를 「서재 문서」에 넣을지는 넘길 것 — 넣으려면 색인이 펼친 모델에서 뽑아야 하고 틀 저장 때 다시 색인(`uses` · `stale`)이 함께 따라야 한다.
+
 ## 진행(걸음 표시)
 
 전체 걸음은 두 저장소에 걸친 아홉이다. 이 저장소가 맡는 걸음은 1 · 2 · 3 · 4 · 8 · 9(5 · 6 · 7은 아카이브).
@@ -178,5 +184,5 @@ DocContext DocContext.copyWith({...});            // 뛰는 자리(anchors)는 �
 | 2 | 엔진: 읽기 전용 열기(`Reader::open_library` · `Window`) · `window.*` 여섯의 Rust 몫 · 오류 코드 셋 · 띠 항목ID NFC(R5 — A로 감) · HLC → UTC ISO · `WINDOW_API_VERSION` · `spec/library-format.md` 색인 판(1 → 2)과 「읽기 전용 열기」 · `spec/namumark.md` 띠 NFC | **끝**(2026-10-25 — 새 검사 `crates/library/tests/read_only.rs` 9 · `crates/index/tests/window.rs` 12, 작업공간 232 통과) |
 | 3 | 다리 op · Dart `LibraryWindow` · 엔진 dll 짓기(`tools/build-native.ps1`) · `spec/engine-api.md` 예정 → 됨 | **끝**(2026-10-25 — 새 검사 `crates/ffi/tests/window.rs` 6 · `packages/history_core/test/window_test.dart` 5, dll `packages/history_core/native/windows-x64/history_core.dll`(git 밖) — 아카이브 걸음 5 ~ 8이 정션으로 씀) |
 | 4 | `packages/library_view` 0.1.0(R6 · R7 · R8) · `history_core` 0.1.0 | **끝**(2026-10-25 — `library_view` 0.1.0 · CHANGELOG · README(글꼴 이름) · CI 일 `library_view`, 패키지 검사 44(옮긴 `blocks_test` 18 · `model_test` 5 + 새 `doc_view_test` 13 · `hanja_card_test` 5 · `package_test` 3) · `ci_workflow_test` 3 통과. `history_core` 0.1.0은 감독 결정 기다림(알게 된 것 23)) |
-| 8 | 함께 시험: 아카이브 작은 앱이 읽기 전용으로 peek · HistoryTime 임시 길(`shelf.docs`)과 같은 답인지 교차 확인 · 릴리스 빌드 | 기다림 |
+| 8 | 함께 시험: 아카이브 작은 앱이 읽기 전용으로 peek · HistoryTime 임시 길(`shelf.docs`)과 같은 답인지 교차 확인 · 릴리스 빌드 | **끝**(2026-10-25 — 아카이브 쪽 몫(아카이브 계획 걸음 8): peek가 `LibraryWindow`로 · 교차 확인 `shelf_cross_test` 같은 답 · 아카이브 릴리스 빌드와 연기 시험 `-TimelinePlace` 통과. 이 저장소는 `spec/windows-api.md`(0절 상태 · 2-4 작은 앱 줄 · 8절 틀로 들인 링크 · 9절 교차 확인)와 이 계획만 고침 — 알게 된 것 30 ~ 32) |
 | 9 | 마무리: 새 검토자 · 넓은 검사(`cargo test --locked --workspace` · `clippy` · `flutter test` 두 패키지) · 보고 · 인수인계 · 넘길 것 | 기다림 |

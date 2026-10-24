@@ -17,7 +17,7 @@
 | 서재 창구의 질의(HistoryCore 읽기 전용 열기 + `window.*`) | **됨** — HistoryCore 가지 `remake-7-link`(엔진 · 다리 op · Dart `LibraryWindow`, main 합치기 전 — 계획 `docs/superpowers/plans/2026-10-25-p5-window-library-view.md`) |
 | 서재 문서 그리기(`packages/library_view`) | **됨** — HistoryCore 가지 `remake-7-link`(판 0.1.0, 태그 전 — `LibraryDocView` · `HanjaCardView` · `kangxiUri`, 패키지 README) |
 | 연표 창구(HistoryTime 엔진 `window.*` · `HKCU\Software\HistoryTime` · `historytime` 등록) | **됨** — HistoryTime 가지 `remake-7`(`de5f1f9`, 그 저장소 main 합치기 전) |
-| 연표 창구를 읽는 쪽(아카이브) | **클라이언트 됨** — 아카이브 가지 `remake-7-link`(P5-2 걸음 6 — 자리 읽기 `RegGetValueW` · dll 사본 · 허락 목록 · 한 줄 차례 · `data_version` 받아 둔 답, `HistoryTimePort`). 화면 잇기(띠 · 오늘의 역사 · `[[연표:` 찾기)는 걸음 7 — 계획 `docs/superpowers/plans/2026-10-25-p5-2-timeline-window.md` |
+| 연표 창구를 읽는 쪽(아카이브) | **됨** — 아카이브 가지 `remake-7-link`(P5-2 — 걸음 6 클라이언트: 자리 읽기 `RegGetValueW` · dll 사본 · 허락 목록 · 한 줄 차례 · `data_version` 받아 둔 답, 걸음 7 화면: 문서 속 띠 · 오늘의 역사 · `[[연표:` 찾기, 걸음 8 함께 시험: 릴리스 앱 연기 시험 `-TimelinePlace` — 계획 `docs/superpowers/plans/2026-10-25-p5-2-timeline-window.md`) |
 | 딥링크 받기 | **됨** — 아카이브(P5-1) · HistoryTime(Windows · 안드로이드는 코드만) |
 | Android 창구(ContentProvider) | **예정** — 서명 키(G11) 뒤. 아카이브는 `version`만 답하는 뼈대(P5-1) |
 
@@ -68,7 +68,7 @@
 | --- | --- |
 | HistoryTime → 아카이브 서재 | `--library-dir=<폴더>` → `HKCU\Software\HistoryArchive`의 `LibraryDir` · `ApiVersion` → 판이 없으면 `<LibraryDir>\HistoryArchive.api.json`의 `api_version`. 시험 실행 · 안드로이드는 손잡이 없이 찾지 않는다 |
 | 아카이브 → HistoryTime 저장소 | 시험 손잡이 — 환경 변수 `HISTORY_ARCHIVE_TIMELINE_PLACE`(`HistoryTime.api.json` 꼴 파일의 경로 — 있으면 그것만) → `HKCU\Software\HistoryTime`의 `Store` · `ApiVersion` · `Engine`. 아카이브는 HistoryTime의 기억 폴더를 모르므로 `HistoryTime.api.json`을 스스로 찾지 않는다. 시험 실행(`HISTORY_ARCHIVE_DATA_DIR`)은 손잡이 없이 찾지 않는다 |
-| 시험용 작은 앱(아카이브 `tools/window/peek.dart`) → 서재 | 명령줄 폴더 → `LibraryDir`. 판은 그 폴더의 `HistoryArchive.api.json` |
+| 시험용 작은 앱(아카이브 `tools/window/peek.dart`) → 서재 · 연표 | 서재: 명령줄 폴더 → `LibraryDir`, 판은 그 폴더의 `HistoryArchive.api.json`(읽기 전용 열기 — 아카이브가 켜져 있어도 됨). 연표(`timeline` 하위 명령): `--place <HistoryTime.api.json 꼴 파일>` → 없으면 아카이브와 같은 차례 |
 
 - 레지스트리는 `RegGetValueW`로 읽기를 권한다(프로세스를 띄우지 않고 · 글자 인코딩이 깨지지 않고 · REG_SZ 끝 NUL을 맞춰 준다). 값이 없거나 꼴이 다르면(REG_SZ가 아님 등) 자리가 없는 것으로 본다.
 
@@ -225,9 +225,11 @@ Windows에서 링크를 받으면: 둘째 실행(명령줄에 링크)은 같은 
 - 연표 항목ID는 HistoryTime 형식 4의 원 uid다(5절). 서재는 문서 속 `[[연표:<항목ID>|…]]` · `[연표(<항목ID>, 범위=…)]`에서 항목ID를 뽑는다(`history_namumark::timeline_entities`, spec/namumark.md).
 - 링크의 항목ID는 주소 해석(나무마크 `ObjectRef::parse` — 앞뒤 공백을 떼고 **NFC로 맞춤** · `#` 뒤는 앵커로 뗌)을 거친다. 그래서 서재 창구는 항목ID를 **NFC로 견준다** — `window.docs_for_entity`는 받은 항목ID도 앞뒤 공백을 떼고 NFC로 맞춰 찾는다.
 - 연표 창구는 받은 항목ID를 그대로(자리 꼬리만 떼어) 견준다. 보내는 쪽(아카이브)은 문서에서 뽑은 ID — 이미 NFC — 를 그대로 보낸다.
+- 서재는 **펼치기 전 본문 글**의 연표 링크 · 띠만 뽑는다 — 틀 인자로 들인 링크(`[include(틀:X, 항목=…)]` 속 `[[연표:@항목@]]`)는 그 문서의 항목 색인에 없다. 그래서 `window.docs_for_entity`는 틀로만 그 항목을 잇는 문서를 내지 않는다(아카이브 교차 확인 · P5-2 걸음 8).
 
 ## 9. 고칠 때
 
 - 이 문서를 먼저 고치고, 두 앱의 구현이 따른다. 연표 창구(5절)는 HistoryTime 계약 1-2와 함께 고친다.
 - 칸 · 질의를 더하는 것은 판 그대로, 바꾸거나 빼면 그 창구의 `api_version`을 올린다(1절).
 - 엔진 op(`library.open`의 `read_only` · `window.*`)는 spec/engine-api.md에도 적는다.
+- 색인 표 꼴이나 `window.docs_for_entity`를 고치면 아카이브 `test/tool/shelf_cross_test.dart`(HistoryTime의 지금 임시 길 `shelf.docs`와 같은 답인지 — 손잡이 `HISTORYTIME_ARCHIVE_TOOL` · `HISTORYTIME_STORE`가 있을 때만)를 함께 돌린다. HistoryTime이 임시 길을 창구로 바꿀 때는 자리 꼬리를 떼고(`api::entity_id`) 묻는다 — 임시 길은 스스로 떼고 창구는 떼지 않는다. 색인이 없으면 임시 길은 `found: false`, 창구는 `no_index`다.
