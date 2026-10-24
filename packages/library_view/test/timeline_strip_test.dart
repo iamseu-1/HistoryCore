@@ -34,4 +34,22 @@ void main() {
     expect(ticks(scene), hasLength(4));
     expect(lines(scene), 4);
   });
+
+  testWidgets('아주 긴 범위 — 수억 해 · 64비트 정수를 넘는 폭도 해마다 돌지 않고 눈금 넷(가지 검토)', (t) async {
+    // 고치기 전에는 해마다 정수 하나를 담은 목록을 지어 수억 해면 그릴 때마다 멈추거나 메모리가 바닥났다.
+    for (final (from, to) in [(1.0, 300000001.0), (-4.6e9, 2.0), (-9e18, 9e18), (-1e300, 1e300)]) {
+      final watch = Stopwatch()..start();
+      final scene = stripScene(TimelineStripData(title: '띠', from: from, to: to), 800);
+      expect(watch.elapsed, lessThan(const Duration(seconds: 1)), reason: '$from ~ $to');
+      expect(ticks(scene), hasLength(4), reason: '$from ~ $to');
+      expect(lines(scene), 4, reason: '가는 칸도 눈금 글 자리에만 — $from ~ $to');
+    }
+    expect(ticks(stripScene(const TimelineStripData(title: '띠', from: 1, to: 300000001), 800)), ['1', '75000002', '150000003', '225000004']);
+    // 유한하지 않은 축 · 뒤집힌 축은 눈금 없이(던지지 않음).
+    for (final (from, to) in [(double.negativeInfinity, 3.0), (double.nan, 3.0), (1.0, double.infinity), (5.0, 1.0)]) {
+      final scene = stripScene(TimelineStripData(title: '띠', from: from, to: to), 800);
+      expect(ticks(scene), isEmpty, reason: '$from ~ $to');
+      expect(lines(scene), 0, reason: '$from ~ $to');
+    }
+  });
 }

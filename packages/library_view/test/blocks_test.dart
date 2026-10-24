@@ -381,6 +381,26 @@ void main() {
     expect(find.text('이 연표에 없는 항목입니다.'), findsOneWidget);
   });
 
+  testWidgets('연표 띠 — 64비트 정수를 넘는 범위 글은 범위가 아닌 것으로(던지지 않음), 폭이 아주 넓은 축도 그린다(가지 검토)', (t) async {
+    expect(parseRange('1..99999999999999999999'), isNull);
+    expect(parseRange(' -9223372036854775808 .. 9223372036854775807 '), (-9223372036854775808, 9223372036854775807));
+    expect(stripRangeText((-9223372036854775808, -1)), '기원전 9223372036854775808–기원전 1');
+    (int, int)? asked = (0, 0);
+    const huge = TimelineStripData(title: '띠', from: -9e18, to: 9e18, events: [StripEvent('가운데', 0)]);
+    Future<TimelineStripData?> strip(String _, (int, int)? range) async {
+      asked = range;
+      return huge;
+    }
+
+    // 편집기 미리보기는 숫자를 치는 동안 다시 그린다 — 넘치는 범위 글에서도 「연표」 자리로 그린다.
+    await _pump(t, [const TimelineStripBlock('k/deep', '1..99999999999999999999')], DocContext(strip: strip));
+    await t.pump();
+    expect(asked, isNull, reason: '못 읽은 범위는 없는 것으로 묻는다(받는 앱이 항목의 기간으로)');
+    expect(find.text('연표'), findsOneWidget);
+    final painter = t.widget<CustomPaint>(find.byKey(const ValueKey('timeline-strip'))).painter! as TimelineStripPainter;
+    expect(painter.toSvg(const Size(1000, 78)), contains('#cf4f35'));
+  });
+
   testWidgets('5,000 문단 문서도 보이는 블록만 짓는다', (t) async {
     final blocks = [
       for (var i = 0; i < 5000; i++) ParaBlock([TextInline('문단 $i')]),

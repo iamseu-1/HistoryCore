@@ -41,16 +41,18 @@ class StripEvent {
   final double at;
 }
 
-/// `1592..1598` → (1592, 1598).
+/// `1592..1598` → (1592, 1598). 64비트 정수를 넘는 수(편집기에서 숫자를 길게 치는 중)는 범위가 아닌 것으로 — 그리기가 던지지 않게.
 (int, int)? parseRange(String? range) {
   final m = RegExp(r'^\s*(-?\d+)\s*\.\.\s*(-?\d+)\s*$').firstMatch(range ?? '');
-  return m == null ? null : (int.parse(m.group(1)!), int.parse(m.group(2)!));
+  if (m == null) return null;
+  final from = int.tryParse(m.group(1)!), to = int.tryParse(m.group(2)!);
+  return from == null || to == null ? null : (from, to);
 }
 
 /// 띠 머리의 범위 글 — 범위의 해는 서기 0년이 없는 셈(spec/namumark.md · spec/windows-api.md 5절)이라 음수는 「기원전 n」.
-/// (1592, 1598) → 「1592–1598」, (−57, −18) → 「기원전 57–기원전 18」.
+/// (1592, 1598) → 「1592–1598」, (−57, −18) → 「기원전 57–기원전 18」. 부호는 글에서 뗀다(가장 작은 정수도 넘치지 않게).
 String stripRangeText((int, int) range) {
-  String year(int y) => y < 0 ? '기원전 ${-y}' : '$y';
+  String year(int y) => y < 0 ? '기원전 ${'$y'.substring(1)}' : '$y';
   return '${year(range.$1)}–${year(range.$2)}';
 }
 
@@ -75,12 +77,16 @@ SvgScene stripScene(TimelineStripData d, double width) {
   }
 
   final shapes = <SvgShape>[];
-  final years = [for (var y = d.from.ceil(); y <= d.to.floor(); y++) y];
+  // 축의 정수 해(첫 해 [first]부터 [years]개)는 목록으로 짓지 않고 긋는 자리만 건너뛰며 센다 — 범위가 수억 해여도 도는 수는 눈금 수다
+  // (수백만 해 범위면 그릴 때마다 해마다 돌던 것을 고침 — 가지 검토). 셈은 실수로 해 64비트 정수를 넘는 폭(−9e18 ~ 9e18)도 넘치지 않는다.
+  final first = d.from.ceilToDouble();
+  final count = d.to.floorToDouble() - first + 1;
+  final years = count.isFinite && count > 0 ? count : 0.0;
   // 눈금 글은 여덟 해가 넘으면 네 개쯤. 가는 칸은 해마다 — 해가 [stripYearLinesMost]를 넘으면(수백 해 띠) 눈금 글 자리에만(회색 덩어리가 되지 않게).
-  final step = years.length > 8 ? (years.length / 4).ceil() : 2;
-  final lineStep = years.length > stripYearLinesMost ? step : 1;
-  for (final (i, y) in years.indexed) {
-    if (i % lineStep == 0) shapes.add(SvgPath('M${x(y.toDouble()).toStringAsFixed(1)} 0v56', stroke: const SvgInk(Ink.rule), strokeWidth: 1));
+  final step = years > 8 ? (years / 4).ceilToDouble() : 2.0;
+  final lineStep = years > stripYearLinesMost ? step : 1.0;
+  for (var i = 0.0; i < years; i += lineStep) {
+    shapes.add(SvgPath('M${x(first + i).toStringAsFixed(1)} 0v56', stroke: const SvgInk(Ink.rule), strokeWidth: 1));
   }
   for (final s in d.spans) {
     final a = x(s.from), b = x(s.to);
@@ -101,8 +107,9 @@ SvgScene stripScene(TimelineStripData d, double width) {
       shapes.add(SvgText(cx - 6, 56, e.label, fill: const SvgInk(Ink.ink2)));
     }
   }
-  for (final (i, y) in years.indexed) {
-    if (i % step == 0) shapes.add(SvgText(x(y.toDouble()), 74, d.yearLabel?.call(y) ?? '$y', fill: const SvgInk(Ink.muted)));
+  for (var i = 0.0; i < years; i += step) {
+    final y = first + i;
+    shapes.add(SvgText(x(y), 74, d.yearLabel?.call(y.toInt()) ?? '${y.toInt()}', fill: const SvgInk(Ink.muted)));
   }
   return SvgScene(shapes, viewBox: Rect.fromLTWH(0, 0, width, stripHeight));
 }
