@@ -7,11 +7,13 @@ pub mod pipeline;
 pub mod search;
 pub mod store;
 pub mod tree;
+pub mod window;
 
 pub use engine::{Engine, Hit, IndexStatus, LibraryTemplates, Opened, StepReport, Wanted};
 pub use rebuild::RebuildReport;
 pub use stats::{DayEdits, DecadeCount, Group, GroupLink, Home, HomeOptions, Linked, MonthNew, SourceCount, Stats};
 pub use tree::{Children, Folder};
+pub use window::{Window, WindowDoc};
 
 /// 색인 스키마 중 뽑기 · 통계 표.
 pub(crate) fn extra_schema() -> String {

@@ -15,6 +15,31 @@ impl Hlc {
     pub fn counter(self) -> u16 {
         self.0 as u16
     }
+
+    /// 벽시계 ms(위 48비트)를 UTC ISO 글로 — `2026-10-24T03:15:00.123Z`(밀리초 세 자리 · `Z`, spec/windows-api.md 4절).
+    /// 카운터는 버린다. HistoryTime 엔진 `shelf.rs`의 `iso_of_hlc`와 같은 꼴(원형 그레고리력).
+    pub fn utc_iso(self) -> String {
+        const DAY_MS: i64 = 86_400_000;
+        let ms = self.wall_ms() as i64;
+        let (y, mo, d) = civil_from_days(ms.div_euclid(DAY_MS));
+        let rest = ms.rem_euclid(DAY_MS);
+        let (h, mi, s, milli) = (rest / 3_600_000, rest / 60_000 % 60, rest / 1000 % 60, rest % 1000);
+        format!("{y:04}-{mo:02}-{d:02}T{h:02}:{mi:02}:{s:02}.{milli:03}Z")
+    }
+}
+
+/// 1970-01-01부터의 날 수 → (해, 달, 날) — 원형 그레고리력(Howard Hinnant의 `civil_from_days`).
+fn civil_from_days(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    (y, m, d)
 }
 
 impl ToSql for Hlc {
@@ -70,5 +95,25 @@ impl Clock {
 
     pub fn last(&self) -> Hlc {
         self.last
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Hlc;
+
+    #[test]
+    fn utc_iso_matches_javascript_to_iso_string() {
+        // 기대값은 `new Date(ms).toISOString()`(node)으로 셈.
+        for (ms, iso) in [
+            (0, "1970-01-01T00:00:00.000Z"),
+            (1_761_275_700_123, "2025-10-24T03:15:00.123Z"),
+            (951_782_400_000, "2000-02-29T00:00:00.000Z"),
+            (1_709_210_096_789, "2024-02-29T12:34:56.789Z"),
+            (4_102_444_799_999, "2099-12-31T23:59:59.999Z"),
+        ] {
+            assert_eq!(Hlc::new(ms, 0).utc_iso(), iso);
+            assert_eq!(Hlc::new(ms, u16::MAX).utc_iso(), iso, "카운터는 버린다");
+        }
     }
 }

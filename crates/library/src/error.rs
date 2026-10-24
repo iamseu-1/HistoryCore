@@ -27,6 +27,12 @@ pub enum Error {
     BadPack(String),
     /// 견주어 합칠 판이 그 문서의 다른 내용 잎이 아님.
     NotALeaf(RevId),
+    /// 읽기 전용으로 열 서재가 없음(폴더 · 파일이 없거나 비었음) — 아무것도 만들지 않았다(spec/windows-api.md 3-1).
+    NoLibrary(PathBuf),
+    /// 읽기 전용 손잡이로는 할 수 없는 일(그 op 이름) — 창구 손잡이는 `window.*` · `library.close`만 받는다.
+    ReadOnly(String),
+    /// 색인이 없거나 판 · 서재가 달라 색인을 쓰는 질의에 답할 수 없음 — 읽기 전용 열기는 색인을 짓지 않는다.
+    NoIndex,
     /// 시험용 실패 주입(`docs.rs` 단위 검사). 보통 실행에서는 생기지 않는다.
     Injected,
 }
@@ -48,6 +54,9 @@ impl Error {
             Error::WrongLibrary(_) => "wrong_library",
             Error::BadPack(_) => "bad_pack",
             Error::NotALeaf(_) => "not_a_leaf",
+            Error::NoLibrary(_) => "no_library",
+            Error::ReadOnly(_) => "read_only",
+            Error::NoIndex => "no_index",
             Error::Injected => "injected",
         }
     }
@@ -70,6 +79,9 @@ impl fmt::Display for Error {
             Error::WrongLibrary(found) => write!(f, "다른 서재의 묶음(서재 {found}) — 들지 않음"),
             Error::BadPack(why) => write!(f, "묶음을 읽을 수 없음: {why}"),
             Error::NotALeaf(rev) => write!(f, "합칠 수 있는 다른 판이 아님: {rev}"),
+            Error::NoLibrary(path) => write!(f, "서재가 없음 — 만들지 않음: {}", path.display()),
+            Error::ReadOnly(op) => write!(f, "읽기 전용으로 연 서재에는 할 수 없음: {op}"),
+            Error::NoIndex => write!(f, "쓸 수 있는 색인이 없음(없거나 판 · 서재가 다름) — 아카이브가 색인을 지어야 함"),
             Error::Injected => write!(f, "시험용 실패 주입"),
         }
     }

@@ -1,12 +1,13 @@
 //! 문서 일 — 만들기 · 저장 · 이름 바꾸기 · 지우기 · 읽기(설계 5-1 · 5-2). 쓰는 일은 모두 SQLite 트랜잭션 하나다.
 use crate::error::{Error, Result};
 use crate::hlc::Hlc;
-use crate::ids::{DeviceId, DocId, RevId};
+use crate::ids::{DeviceId, DocId, LibraryId, RevId};
 use crate::ns::Namespace;
-use crate::store::{Counts, Doc, DocSummary, Library, NewDoc, Renamed, RevInfo, RevKind, Revision, Saved};
+use crate::store::{check_identity, identity_error, in_read_tx, meta_id, open_read_only, Counts, Doc, DocSummary, Library, NewDoc, Renamed, RevInfo, RevKind, Revision, Saved, SideFiles, FILE, FOLDER};
 use crate::title::normalize_title;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, ErrorCode, OptionalExtension};
 use std::borrow::Cow;
+use std::path::Path;
 
 const ZSTD_LEVEL: i32 = 3;
 /// 이름공간 · 지움별 문서 수.
@@ -74,6 +75,39 @@ pub(crate) fn decode(blob: &[u8]) -> Result<String> {
     .map_err(|e| Error::Corrupt(format!("본문 풀기: {e}")))?;
     String::from_utf8(bytes).map_err(|_| Error::Corrupt("본문이 UTF-8이 아님".into()))
 }
+
+/// 머리 판 본문까지 읽은 문서. 없으면 None.
+fn get_in(db: &Connection, doc: DocId) -> Result<Option<Doc>> {
+    let h = match load_head(db, doc) {
+        Ok(h) => h,
+        Err(Error::NotFound(_)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let body = read_body(db, h.head)?;
+    Ok(Some(Doc { id: doc, ns: h.ns, title: h.title, head: h.head, created: h.created, updated: h.updated, deleted: h.deleted, body }))
+}
+
+/// 본문을 풀지 않는 요약과 지움 표시. 없으면 None.
+fn summary_in(db: &Connection, doc: DocId) -> Result<Option<(DocSummary, bool)>> {
+    match load_head(db, doc) {
+        Ok(h) => Ok(Some((DocSummary { id: doc, ns: h.ns, title: h.title, head: h.head, created: h.created, updated: h.updated }, h.deleted))),
+        Err(Error::NotFound(_)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// 이름공간 · 제목이 같은 살아 있는 문서 중 먼저 만든 것. 쓸 수 없는 제목이면 None.
+fn first_by_title_in(db: &Connection, ns: Namespace, title: &str) -> Result<Option<DocId>> {
+    let Ok(title) = normalize_title(title) else {
+        return Ok(None);
+    };
+    Ok(db
+        .prepare_cached("SELECT id FROM doc WHERE ns = ?1 AND title = ?2 AND deleted = 0 ORDER BY created, id LIMIT 1")?
+        .query_row(params![ns, title], |r| r.get(0))
+        .optional()?)
+}
+
+const LAST_SEQ_SQL: &str = "SELECT COALESCE(MAX(seq), 0) FROM rev";
 
 fn read_body(db: &Connection, rev: RevId) -> Result<String> {
     let blob: Vec<u8> = db
@@ -264,13 +298,7 @@ impl Library {
     }
 
     pub fn get(&self, doc: DocId) -> Result<Option<Doc>> {
-        let h = match load_head(&self.db, doc) {
-            Ok(h) => h,
-            Err(Error::NotFound(_)) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        let body = read_body(&self.db, h.head)?;
-        Ok(Some(Doc { id: doc, ns: h.ns, title: h.title, head: h.head, created: h.created, updated: h.updated, deleted: h.deleted, body }))
+        get_in(&self.db, doc)
     }
 
     /// 이름공간 · 제목이 같은 살아 있는 문서들(만든 차례). 쓸 수 없는 제목이면 빈 목록.
@@ -326,7 +354,7 @@ impl Library {
 
     /// 마지막 판 번호(`rev.seq`, 늘기만 한다) — 색인의 눈금과 견준다.
     pub fn last_seq(&self) -> Result<i64> {
-        Ok(self.db.query_row("SELECT COALESCE(MAX(seq), 0) FROM rev", [], |r| r.get(0))?)
+        Ok(self.db.query_row(LAST_SEQ_SQL, [], |r| r.get(0))?)
     }
 
     /// 판 번호 `after` 뒤의 판(번호 차례), 많아야 `limit` — (번호, 문서, 시각).
@@ -361,9 +389,7 @@ impl Library {
 
     /// 같은 서재 파일을 읽기 전용으로 따로 연다 — 다른 스레드에서 읽을 때(통째 짓기).
     pub fn reader(&self) -> Result<Reader> {
-        let path = self.info.folder.join(crate::store::FILE);
-        let db = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
-        Ok(Reader { db })
+        Reader::open(&self.info.folder.join(FILE))
     }
 
     /// 판 번호 `after` 뒤에 판이 생긴 문서 수.
@@ -379,11 +405,7 @@ impl Library {
 
     /// 본문을 풀지 않는 요약과 지움 표시. 없으면 None.
     pub fn summary(&self, doc: DocId) -> Result<Option<(DocSummary, bool)>> {
-        match load_head(&self.db, doc) {
-            Ok(h) => Ok(Some((DocSummary { id: doc, ns: h.ns, title: h.title, head: h.head, created: h.created, updated: h.updated }, h.deleted))),
-            Err(Error::NotFound(_)) => Ok(None),
-            Err(e) => Err(e),
-        }
+        summary_in(&self.db, doc)
     }
 
     pub fn counts(&self) -> Result<Counts> {
@@ -402,38 +424,79 @@ impl Library {
     }
 }
 
-/// 읽기 전용 연결 하나(`Library::reader`). 다른 스레드로 옮길 수 있다.
+/// 읽기 전용 연결 하나 — 통째 짓기의 일꾼(`Library::reader` · `Reader::open`)과 바깥 앱의 서재 창구(`Reader::open_library`).
+/// 쓰는 메서드가 없다. 다른 스레드로 옮길 수 있다.
 pub struct Reader {
     db: Connection,
+    /// 바깥 앱의 열기만 — 이 열기가 만든 곁 파일을 놓일 때 치운다. 연결 다음 칸이라 연결이 먼저 닫힌다.
+    _sides: Option<SideFiles>,
 }
 
 impl Reader {
-    /// 서재 파일(`<자료 폴더>/HistoryCore/library.db`)을 읽기 전용으로 연다.
-    pub fn open(library_db: &std::path::Path) -> Result<Reader> {
+    /// 서재 파일(`<자료 폴더>/HistoryCore/library.db`)을 읽기 전용으로 연다(같은 프로세스의 쓰는 서재 곁 — 통째 짓기).
+    pub fn open(library_db: &Path) -> Result<Reader> {
         let db = Connection::open_with_flags(library_db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
-        Ok(Reader { db })
+        Ok(Reader { db, _sides: None })
+    }
+
+    /// 바깥 앱이 `app_dir`(앱 자료 폴더)의 서재를 읽기 전용으로 연다(spec/windows-api.md 3-1).
+    /// 폴더 · 파일을 만들지 않는다 — 없거나, 비었거나, 표가 없으면 `NoLibrary`. 정체는 보통 열기처럼 본다(남의 파일 `NotALibrary` ·
+    /// 더 새 판 `NewerFormat`). 쓰지 않는다 — `journal_mode` · 스키마 · 동기화 표를 건드리지 않고, 연결은 `query_only`다.
+    pub fn open_library(app_dir: &Path) -> Result<Reader> {
+        let path = app_dir.join(FOLDER).join(FILE);
+        match std::fs::metadata(&path) {
+            Ok(m) if !m.is_file() => return Err(Error::NotALibrary(path)),
+            Ok(m) if m.len() == 0 => return Err(Error::NoLibrary(path)),
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Error::NoLibrary(path)),
+            Err(e) => return Err(e.into()),
+        }
+        let (db, sides) = open_read_only(&path).map_err(|e| identity_error(e, &path))?;
+        let reader = Reader { db, _sides: Some(sides) };
+        match check_identity(&reader.db, &path) {
+            Ok(0) => Err(Error::NoLibrary(path)),
+            Ok(_) => Ok(reader),
+            // 살핀 뒤 열기 전에 사라졌다 — 없는 것과 같다.
+            Err(Error::Sqlite(rusqlite::Error::SqliteFailure(f, _))) if f.code == ErrorCode::CannotOpen && !path.exists() => Err(Error::NoLibrary(path)),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// 읽기 거래 하나 안에서 `f`를 부른다 — 질의 하나를 이것으로 감싸면 그 사이 쓰는 쪽이 거둔 판이 반쪽만 섞이지 않는다.
+    pub fn read<T>(&self, f: impl FnOnce(&Reader) -> Result<T>) -> Result<T> {
+        in_read_tx(&self.db, || f(self))
+    }
+
+    /// 서재 ID(`meta.library` — 합류하면 바뀐다).
+    pub fn library(&self) -> Result<LibraryId> {
+        meta_id(&self.db, "library", LibraryId::parse)
+    }
+
+    /// 마지막 판 번호(`rev.seq`) — 색인의 눈금과 견준다.
+    pub fn last_seq(&self) -> Result<i64> {
+        Ok(self.db.prepare_cached(LAST_SEQ_SQL)?.query_row([], |r| r.get(0))?)
     }
 
     pub fn get(&self, doc: DocId) -> Result<Option<Doc>> {
-        let h = match load_head(&self.db, doc) {
-            Ok(h) => h,
-            Err(Error::NotFound(_)) => return Ok(None),
-            Err(e) => return Err(e),
-        };
-        let body = read_body(&self.db, h.head)?;
-        Ok(Some(Doc { id: doc, ns: h.ns, title: h.title, head: h.head, created: h.created, updated: h.updated, deleted: h.deleted, body }))
+        get_in(&self.db, doc)
     }
 
-    /// 이름공간 · 제목이 같은 살아 있는 문서 중 먼저 만든 것.
+    /// 본문을 풀지 않는 요약과 지움 표시. 없으면 None.
+    pub fn summary(&self, doc: DocId) -> Result<Option<(DocSummary, bool)>> {
+        summary_in(&self.db, doc)
+    }
+
+    /// 이름공간 · 제목이 같은 살아 있는 문서 중 먼저 만든 것. 제목은 맞춰서 찾고, 쓸 수 없는 제목이면 None.
     pub fn first_by_title(&self, ns: Namespace, title: &str) -> Result<Option<DocId>> {
-        let Ok(title) = normalize_title(title) else {
+        first_by_title_in(&self.db, ns, title)
+    }
+
+    /// 그 제목의 살아 있는 문서(같은 제목이면 먼저 만든 것)의 머리 본문 — 틀 펼치기가 읽는 원문. 없으면 None.
+    pub fn body_by_title(&self, ns: Namespace, title: &str) -> Result<Option<String>> {
+        let Some(id) = self.first_by_title(ns, title)? else {
             return Ok(None);
         };
-        Ok(self
-            .db
-            .prepare_cached("SELECT id FROM doc WHERE ns = ?1 AND title = ?2 AND deleted = 0 ORDER BY created, id LIMIT 1")?
-            .query_row(params![ns, title], |r| r.get(0))
-            .optional()?)
+        Ok(self.get(id)?.filter(|d| !d.deleted).map(|d| d.body))
     }
 }
 
@@ -484,6 +547,23 @@ mod tests {
         let docs: i64 = lib.db.query_row("SELECT count(*) FROM doc", [], |r| r.get(0)).unwrap();
         assert_eq!((revs, docs), (1, 1));
         drop(lib);
+        std::fs::remove_dir_all(&app).unwrap();
+    }
+
+    #[test]
+    fn the_outside_reader_refuses_writes_even_by_hand() {
+        // 쓰는 메서드가 없을 뿐 아니라 연결 자체가 읽기 전용 · query_only다 — 손으로 SQL을 보내도 쓰지 못한다.
+        let app = std::env::temp_dir().join(format!("서재 시험 읽기 전용 쓰기 {}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&app);
+        let mut lib = Library::open(&app).unwrap();
+        lib.create(Namespace::Doc, "임진왜란", "본문", "").unwrap();
+        drop(lib);
+        let r = crate::Reader::open_library(&app).unwrap();
+        assert!(r.db.execute("INSERT INTO meta(key, value) VALUES ('쓰기', '시험')", []).is_err());
+        assert!(r.db.execute_batch("CREATE TABLE 새_표(x)").is_err());
+        let only: i64 = r.db.pragma_query_value(None, "query_only", |row| row.get(0)).unwrap();
+        assert_eq!(only, 1);
+        drop(r);
         std::fs::remove_dir_all(&app).unwrap();
     }
 }

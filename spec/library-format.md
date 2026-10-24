@@ -21,6 +21,14 @@
 
 열면 `journal_mode = WAL`, `synchronous = FULL`.
 
+### 읽기 전용 열기(서재 창구 — spec/windows-api.md 3-1)
+
+바깥 앱이 서재를 읽을 때(`history_library::Reader::open_library` · `history_index::Window`)는 위 표와 달리 **아무것도 만들거나 쓰지 않는다**.
+
+- 폴더 · 파일이 없거나, 빈 파일이거나, 표가 없는 SQLite면 `no_library`(새 서재를 만들지 않는다). 남의 파일 · 더 새 판은 위 표와 같다.
+- `SQLITE_OPEN_READ_ONLY` · `PRAGMA query_only` · 기다림 2초로 연다. `journal_mode` · 스키마 · 동기화 표(`SYNC_SCHEMA`)를 건드리지 않는다.
+- 질의마다 읽기 거래 하나로 감싼다(WAL — 거둔 판만 본다). 서재가 꺼져 있을 때 SQLite가 만든 빈 `-wal` · `-shm`은 놓을 때 치운다(Windows만 · 열기 전에 없던 것만).
+
 ## 표
 
 | 표 | 열 | 뜻 |
@@ -52,9 +60,10 @@ NFC로 맞추고(호환 한자 → 통합 한자) 보이지 않는 글자(U+200B
 
 설계 5-5 · 5-7. 원본에서 언제든 다시 짓는 파생물이라 지워도 된다 — 동기화로 보내지 않는다.
 
-- **정체**: `PRAGMA application_id` = `0x48434958`("HCIX"), `user_version` = 1, `meta.library` = 서재 ID.
+- **정체**: `PRAGMA application_id` = `0x48434958`("HCIX"), `user_version` = 2(`crates/index/src/store.rs`의 `FORMAT` — 모양이 바뀌면 올리고, 옮기지 않고 다시 짓는다), `meta.library` = 서재 ID.
   - 우리 것인데 판이 다르거나, 다른 서재의 색인이거나, SQLite가 아니면(깨짐) 그 파일만 지우고 새로 만든다.
   - application_id가 남의 것이면 건드리지 않고 `not_a_library`로 답한다.
+  - 서재 창구(읽기 전용)는 이 셋 중 하나라도 맞지 않으면 「색인 없음」으로 다룬다 — 지우거나 다시 짓지 않는다(색인을 쓰는 질의만 `no_index`).
   - 옛 앱이 자료 폴더 바로 아래 둔 `index.db`는 다른 파일이다 — 읽지도 쓰지도 않는다.
 - **눈금**: `meta.seq` = 색인에 든 마지막 판 번호(`rev.seq`, 늘기만 한다). 그 뒤의 판(끊긴 저장 · 엔진 없이 들어온 판)과 `stale` 표(바뀐 틀을 쓰는 문서 · 틀을 읽다 실패한 문서)가 「낡음」이다.
   - 열 때 다시 짓지 않고, `index.step`이 조금씩 따라잡는다.

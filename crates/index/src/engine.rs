@@ -6,8 +6,8 @@ use crate::stats::{bump_new, bump_ns, bump_source, bump_years, count_edits, Home
 use crate::store::{meta_i64, set_meta, Index};
 use crate::search::{fts_match, parse_query, snippet, verify, SHARDS, SHARD_TABLES};
 use crate::tree::{summary_row, Children, Tree};
-use history_library::{Applied, Doc, DocId, DocSummary, Error, Hlc, Library, LibraryId, Namespace, RevId, Renamed, Result, Saved, WallClock};
-use history_namumark::{plain_document, render, render_document, ObjectRef, RenderOptions, Templates};
+use history_library::{Applied, Doc, DocId, DocSummary, Error, Hlc, Library, LibraryId, Namespace, Reader, RevId, Renamed, Result, Saved, WallClock};
+use history_namumark::{plain_document, render, render_document, Document, Model, ObjectRef, RenderOptions, Templates};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::cell::RefCell;
 use std::collections::HashSet;
@@ -187,8 +187,7 @@ pub(crate) fn prepare_doc(d: Doc, templates: &dyn Templates) -> Result<Prepared>
         let model = serde_json::to_vec(&render("", &RenderOptions::default(), &history_namumark::NoTemplates)).expect("모델 JSON");
         return Ok(base(zip(&model)?, zip(b"")?, String::new(), None, None, Extracted::default()));
     }
-    let options = RenderOptions { title: Some(d.title.clone()), template: d.ns == Namespace::Template };
-    let (model, tree) = render_document(&d.body, &options, templates);
+    let (model, tree) = draw(&d, templates);
     let plain = crate::search::stored_plain(&plain_document(&tree));
     let tokens = crate::search::index_text(&plain);
     let home = tree.categories.first().cloned();
@@ -196,6 +195,122 @@ pub(crate) fn prepare_doc(d: Doc, templates: &dyn Templates) -> Result<Prepared>
     let ex = extract(&model, &tree);
     let json = serde_json::to_vec(&model).expect("모델 JSON");
     Ok(base(zip(&json)?, zip(plain.as_bytes())?, tokens, home, redirect, ex))
+}
+
+/// 살아 있는 문서의 머리 판을 그린다 — 색인(`prepare_doc`)과 서재 창구(`Window::doc`)가 같은 선택으로 그려야 같은 모델이 나온다.
+pub(crate) fn draw(d: &Doc, templates: &dyn Templates) -> (Model, Document) {
+    let options = RenderOptions { title: Some(d.title.clone()), template: d.ns == Namespace::Template };
+    render_document(&d.body, &options, templates)
+}
+
+/// 색인한 판이 머리 판인지 견줄 서재 — 쓰는 엔진의 `Library`와 서재 창구의 `Reader`.
+pub(crate) trait Heads {
+    fn last_seq(&self) -> Result<i64>;
+    fn head(&self, doc: DocId) -> Result<Option<RevId>>;
+}
+
+impl Heads for Library {
+    fn last_seq(&self) -> Result<i64> {
+        Library::last_seq(self)
+    }
+    fn head(&self, doc: DocId) -> Result<Option<RevId>> {
+        Ok(self.summary(doc)?.map(|(s, _)| s.head))
+    }
+}
+
+impl Heads for Reader {
+    fn last_seq(&self) -> Result<i64> {
+        Reader::last_seq(self)
+    }
+    fn head(&self, doc: DocId) -> Result<Option<RevId>> {
+        Ok(self.summary(doc)?.map(|(s, _)| s.head))
+    }
+}
+
+/// 이 연표 항목을 잇는 살아 있는 문서(연표 링크 · 연표 띠), 같은 문서는 한 번 · 제목 차례 — `timeline.docs`와 `window.docs_for_entity`가 함께 쓴다.
+pub(crate) fn timeline_docs_in(db: &Connection, entity: &str) -> Result<Vec<DocSummary>> {
+    let mut st = db.prepare_cached(
+        "SELECT DISTINCT i.doc, i.ns, i.title, i.rev, i.created, i.updated FROM entity e JOIN item i ON i.rowid = e.doc
+         WHERE e.entity = ?1 AND i.deleted = 0 ORDER BY i.title",
+    )?;
+    let rows = st.query_map([entity], summary_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// 있는 문서 ID — 같은 차례, 없으면 None. 제목은 정규화하고, 같은 제목이 둘이면 먼저 만든 것(`titles.exist` · `window.titles_exist`).
+pub(crate) fn titles_exist_in(db: &Connection, titles: &[(Namespace, String)]) -> Result<Vec<Option<DocId>>> {
+    let mut st = db.prepare_cached("SELECT doc FROM item INDEXED BY item_title WHERE ns = ?1 AND title = ?2 AND deleted = 0 ORDER BY ns, title, created LIMIT 1")?;
+    let mut out = Vec::with_capacity(titles.len());
+    for (ns, t) in titles {
+        let found = match history_library::normalize_title(t) {
+            Ok(t) => st.query_row(params![ns, t], |r| r.get(0)).optional()?,
+            Err(_) => None,
+        };
+        out.push(found);
+    }
+    Ok(out)
+}
+
+/// 제목이 `prefix`로 시작하는 살아 있는 문서(제목 차례) — 덮는 제목 색인 한 범위(`search.titles` · `window.search`).
+pub(crate) fn search_titles_in(db: &Connection, ns: Namespace, prefix: &str, limit: usize) -> Result<Vec<DocSummary>> {
+    use unicode_normalization::UnicodeNormalization;
+    let prefix: String = prefix.trim_start().nfc().collect();
+    if prefix.is_empty() {
+        return Ok(Vec::new());
+    }
+    let upper = format!("{prefix}\u{10FFFF}");
+    let mut st = db.prepare_cached(
+        "SELECT doc, ns, title, rev, created, updated FROM item INDEXED BY item_title
+         WHERE ns = ?1 AND title >= ?2 AND title < ?3 AND deleted = 0 ORDER BY ns, title, created LIMIT ?4",
+    )?;
+    let rows = st.query_map(params![ns, prefix, upper, limit as i64], summary_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// 본문 찾기 — 조각 색인 넷을 문서 번호 차례로 합쳐 후보를 받고, 지운 · 낡은 문서는 건너뛰고, 확인을 지난 것만 `limit`까지
+/// (`search.body` · `window.search`). 색인이 서재와 같으면(눈금이 마지막 판 · 낡음 없음) 후보마다 머리 판을 묻지 않는다.
+pub(crate) fn search_body_in(db: &Connection, unz: &mut zstd::bulk::Decompressor<'static>, lib: &dyn Heads, query: &str, limit: usize) -> Result<Vec<Hit>> {
+    let Some(q) = parse_query(query) else {
+        return Ok(Vec::new());
+    };
+    let m = fts_match(&q);
+    let stale_rows: i64 = db.query_row("SELECT count(*) FROM stale", [], |r| r.get(0))?;
+    let fresh = stale_rows == 0 && meta_i64(db, "seq")? == lib.last_seq()?;
+    let mut stmts = Vec::with_capacity(SHARDS);
+    for t in SHARD_TABLES {
+        stmts.push(db.prepare_cached(&format!("SELECT rowid FROM {t} WHERE {t} MATCH ?1"))?);
+    }
+    let mut rows = Vec::with_capacity(SHARDS);
+    for s in stmts.iter_mut() {
+        rows.push(s.query([&m])?);
+    }
+    let mut heads = Vec::with_capacity(SHARDS);
+    for r in rows.iter_mut() {
+        heads.push(next_rowid(r)?);
+    }
+    let mut hits = Vec::new();
+    while hits.len() < limit {
+        let Some((k, rowid)) = heads.iter().enumerate().filter_map(|(k, h)| h.map(|r| (k, r))).min_by_key(|&(_, r)| r) else {
+            break;
+        };
+        heads[k] = next_rowid(&mut rows[k])?;
+        let row: Option<(DocSummary, bool, Vec<u8>)> = db
+            .prepare_cached(
+                "SELECT i.doc, i.ns, i.title, i.rev, i.created, i.updated, i.deleted, p.z FROM item i JOIN plain p ON p.rowid = i.rowid WHERE i.rowid = ?1",
+            )?
+            .query_row([rowid], |r| Ok((summary_row(r)?, r.get(6)?, r.get(7)?)))
+            .optional()?;
+        let Some((doc, deleted, z)) = row else { continue };
+        if deleted || (!fresh && lib.head(doc.id)? != Some(doc.head)) {
+            continue; // 지웠거나, 색인한 글이 머리 판보다 낡았다
+        }
+        let plain = unzip_with(unz, &z)?;
+        if !verify(&plain, &q) {
+            continue;
+        }
+        hits.push(Hit { snippet: snippet(&plain, &q, 40), doc });
+    }
+    Ok(hits)
 }
 
 thread_local! {
@@ -658,82 +773,17 @@ impl Engine {
     /// 있는 문서 ID — 같은 차례, 없으면 None. 제목은 정규화하고, 같은 제목이 둘이면 먼저 만든 것.
     /// 색인의 덮는 제목 색인에서 읽는다(서재 표를 차갑게 찾아가지 않는다 — 색인이 낡았으면 그만큼 늦다).
     pub fn titles_exist(&self, titles: &[(Namespace, String)]) -> Result<Vec<Option<DocId>>> {
-        let mut st = self
-            .idx
-            .db
-            .prepare_cached("SELECT doc FROM item INDEXED BY item_title WHERE ns = ?1 AND title = ?2 AND deleted = 0 ORDER BY ns, title, created LIMIT 1")?;
-        let mut out = Vec::with_capacity(titles.len());
-        for (ns, t) in titles {
-            let found = match history_library::normalize_title(t) {
-                Ok(t) => st.query_row(params![ns, t], |r| r.get(0)).optional()?,
-                Err(_) => None,
-            };
-            out.push(found);
-        }
-        Ok(out)
+        titles_exist_in(&self.idx.db, titles)
     }
 
     /// 제목이 `prefix`로 시작하는 살아 있는 문서(제목 차례) — 덮는 제목 색인 한 범위.
     pub fn search_titles(&self, ns: Namespace, prefix: &str, limit: usize) -> Result<Vec<DocSummary>> {
-        use unicode_normalization::UnicodeNormalization;
-        let prefix: String = prefix.trim_start().nfc().collect();
-        if prefix.is_empty() {
-            return Ok(Vec::new());
-        }
-        let upper = format!("{prefix}\u{10FFFF}");
-        let mut st = self.idx.db.prepare_cached(
-            "SELECT doc, ns, title, rev, created, updated FROM item INDEXED BY item_title
-             WHERE ns = ?1 AND title >= ?2 AND title < ?3 AND deleted = 0 ORDER BY ns, title, created LIMIT ?4",
-        )?;
-        let rows = st.query_map(params![ns, prefix, upper, limit as i64], summary_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        search_titles_in(&self.idx.db, ns, prefix, limit)
     }
 
     /// 본문 찾기 — 조각 색인 넷을 문서 번호 차례로 합쳐 후보를 받고, 지운 · 낡은 문서는 건너뛰고, 확인을 지난 것만 `limit`까지.
     pub fn search_body(&mut self, query: &str, limit: usize) -> Result<Vec<Hit>> {
-        let Some(q) = parse_query(query) else {
-            return Ok(Vec::new());
-        };
-        let m = fts_match(&q);
-        // 색인이 서재와 같으면(눈금이 마지막 판 · 낡음 없음) 후보마다 머리 판을 묻지 않는다.
-        let stale_rows: i64 = self.idx.db.query_row("SELECT count(*) FROM stale", [], |r| r.get(0))?;
-        let fresh = stale_rows == 0 && self.idx.seq()? == self.lib.last_seq()?;
-        let db = &self.idx.db;
-        let mut stmts = Vec::with_capacity(SHARDS);
-        for t in SHARD_TABLES {
-            stmts.push(db.prepare_cached(&format!("SELECT rowid FROM {t} WHERE {t} MATCH ?1"))?);
-        }
-        let mut rows = Vec::with_capacity(SHARDS);
-        for s in stmts.iter_mut() {
-            rows.push(s.query([&m])?);
-        }
-        let mut heads = Vec::with_capacity(SHARDS);
-        for r in rows.iter_mut() {
-            heads.push(next_rowid(r)?);
-        }
-        let mut hits = Vec::new();
-        while hits.len() < limit {
-            let Some((k, rowid)) = heads.iter().enumerate().filter_map(|(k, h)| h.map(|r| (k, r))).min_by_key(|&(_, r)| r) else {
-                break;
-            };
-            heads[k] = next_rowid(&mut rows[k])?;
-            let row: Option<(DocSummary, bool, Vec<u8>)> = db
-                .prepare_cached(
-                    "SELECT i.doc, i.ns, i.title, i.rev, i.created, i.updated, i.deleted, p.z FROM item i JOIN plain p ON p.rowid = i.rowid WHERE i.rowid = ?1",
-                )?
-                .query_row([rowid], |r| Ok((summary_row(r)?, r.get(6)?, r.get(7)?)))
-                .optional()?;
-            let Some((doc, deleted, z)) = row else { continue };
-            if deleted || (!fresh && self.lib.summary(doc.id)?.map(|(s, _)| s.head) != Some(doc.head)) {
-                continue; // 지웠거나, 색인한 글이 머리 판보다 낡았다
-            }
-            let plain = unzip_with(&mut self.unz, &z)?;
-            if !verify(&plain, &q) {
-                continue;
-            }
-            hits.push(Hit { snippet: snippet(&plain, &q, 40), doc });
-        }
-        Ok(hits)
+        search_body_in(&self.idx.db, &mut self.unz, &self.lib, query, limit)
     }
 
     /// 이 문서 제목으로 링크(본문 · 넘겨주기)한 살아 있는 문서, 제목 차례.
@@ -765,12 +815,7 @@ impl Engine {
 
     /// 이 연표 항목을 잇는 문서(연표 링크 · 연표 띠), 제목 차례.
     pub fn timeline_docs(&self, entity: &str) -> Result<Vec<DocSummary>> {
-        let mut st = self.idx.db.prepare_cached(
-            "SELECT DISTINCT i.doc, i.ns, i.title, i.rev, i.created, i.updated FROM entity e JOIN item i ON i.rowid = e.doc
-             WHERE e.entity = ?1 AND i.deleted = 0 ORDER BY i.title",
-        )?;
-        let rows = st.query_map([entity], summary_row)?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+        timeline_docs_in(&self.idx.db, entity)
     }
 
     /// 분류 폴더 하나 — `None`이면 맨 위(「분류 안 됨」 수 포함), 빈 이름이면 「분류 안 됨」 문서.

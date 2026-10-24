@@ -1,6 +1,6 @@
 //! 색인 파일 `HistoryCore/index.db`(설계 5-5 · 5-7) — 파생물이라 지워도 `library.db`에서 다시 짓는다.
 //! 정체(application_id "HCIX")가 우리 것이면 깨졌거나 판이 달라도 그 파일만 다시 짓고, 남의 것이면 건드리지 않는다.
-use history_library::{Error, LibraryId, Result};
+use history_library::{Error, LibraryId, Result, SideFiles};
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
 
@@ -72,6 +72,53 @@ impl Index {
     /// 눈금 — 이 판 번호(`rev.seq`)까지의 판은 모두 색인에 들었다.
     pub(crate) fn seq(&self) -> Result<i64> {
         meta_i64(&self.db, "seq")
+    }
+}
+
+/// 서재 창구의 색인 읽기 연결(spec/windows-api.md 3-1 · 4절) — 짓지도 · 고치지도 · 지우지도 않는다.
+/// 연결 칸 다음에 곁 파일 표시를 둔다 — 칸은 적은 차례로 놓이므로 연결이 먼저 닫히고 그다음 이 열기가 만든 곁 파일을 치운다.
+pub(crate) struct ReadIndex {
+    pub(crate) db: Connection,
+    _sides: SideFiles,
+}
+
+impl ReadIndex {
+    /// `folder`(= `<앱 자료 폴더>/HistoryCore`)의 index.db를 읽기 전용으로 연다. 없거나 · 비었거나 · SQLite가 아니거나 · 정체가 "HCIX"가
+    /// 아니거나 · 판이 `FORMAT`이 아니거나 · 다른 서재의 색인이면 None(색인 없음 — 다시 짓는 것은 아카이브 몫).
+    /// 잠김 · 권한 · 입출력 오류는 그대로 올린다.
+    pub(crate) fn open(folder: &Path, library: LibraryId) -> Result<Option<ReadIndex>> {
+        let path = folder.join(FILE);
+        match std::fs::metadata(&path) {
+            Ok(m) if m.is_file() && m.len() > 0 => {}
+            Ok(_) => return Ok(None),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e.into()),
+        }
+        let (db, sides) = match history_library::open_read_only(&path) {
+            Ok(opened) => opened,
+            Err(e) if not_a_database(&e) => return Ok(None),
+            // 살핀 뒤 열기 전에 사라졌다(아카이브가 바꿔 끼우는 중) — 없는 것과 같다.
+            Err(rusqlite::Error::SqliteFailure(f, _)) if f.code == ErrorCode::CannotOpen && !path.exists() => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        let idx = ReadIndex { db, _sides: sides };
+        match idx.ours(library) {
+            Ok(true) => Ok(Some(idx)),
+            Ok(false) => Ok(None),
+            Err(e) if not_a_database(&e) || matches!(&e, rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::Unknown) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// 이 서재의 지금 판 색인인가. `meta` 표가 없는 등 SQL 오류(SQLITE_ERROR)는 부르는 쪽이 「아님」으로 본다.
+    fn ours(&self, library: LibraryId) -> rusqlite::Result<bool> {
+        let app_id: i64 = self.db.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        let version: i64 = self.db.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        if app_id != APPLICATION_ID || version != FORMAT {
+            return Ok(false);
+        }
+        let ours: Option<String> = self.db.query_row("SELECT value FROM meta WHERE key = 'library'", [], |r| r.get(0)).optional()?;
+        Ok(ours.as_deref() == Some(library.to_string().as_str()))
     }
 }
 

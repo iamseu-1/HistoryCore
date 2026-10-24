@@ -38,6 +38,17 @@ fn timeline_strips() {
 }
 
 #[test]
+fn a_strip_entity_is_nfc_like_a_timeline_link() {
+    // 링크 `[[연표:…]]`는 주소 해석에서 NFC로 맞춘다 — 띠도 같게 해야 색인 · 창구가 같은 항목ID로 찾는다(spec/windows-api.md 8절).
+    use unicode_normalization::UnicodeNormalization;
+    let nfd: String = "한국/세종".nfd().collect();
+    assert_ne!(nfd, "한국/세종");
+    assert_eq!(blocks(&format!("[연표({nfd}, 범위=1418..1450)]")), [Block::TimelineStrip { entity: "한국/세종".into(), range: Some("1418..1450".into()) }]);
+    let d = parse(&format!("[[연표:{nfd}]]\n[연표({nfd})]"), &Options::default());
+    assert_eq!(timeline_entities(&d), ["한국/세종"]);
+}
+
+#[test]
 fn timeline_entities_from_links_and_strips_once_each_in_order() {
     let d = parse("[[연표:01A|임진왜란]] [[연표:01B]]\n[연표(01C, 범위=1592..1598)]\n[[연표:01A]] [[임진왜란]]", &Options::default());
     assert_eq!(timeline_entities(&d), ["01A", "01B", "01C"]);

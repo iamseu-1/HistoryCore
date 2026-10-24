@@ -6,6 +6,7 @@ use crate::ns::Namespace;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ToSql, ToSqlOutput, ValueRef};
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// 앱 자료 폴더 아래 엔진의 자리. 옛 앱은 자료 폴더 바로 아래에 `library.db` · `index.db` · `local.db`를 두었으므로
 /// 새 엔진은 그 자리에 아무것도 쓰지 않고 이 하위 폴더에만 쓴다.
@@ -235,8 +236,73 @@ impl Library {
     }
 }
 
+/// 읽기 전용 연결이 기다리는 한도 — 아카이브가 쓰는 중이라 잠깐 잠겼으면(WAL 되살리기 등) 이만큼 기다린다.
+pub const READ_ONLY_BUSY: Duration = Duration::from_secs(2);
+
+/// 바깥 앱의 읽기 전용 연결(spec/windows-api.md 3-1) — `SQLITE_OPEN_READ_ONLY`(만들지 않음) · `query_only`(쓰지 않음) · 기다림 2초.
+/// `journal_mode` · 스키마는 건드리지 않는다. 곁 파일 표시를 함께 준다 — 부르는 쪽은 연결을 먼저 놓고 표시를 뒤에 놓는다
+/// (구조체에서 연결 칸 다음에 둔다 — 칸은 적은 차례로 놓인다).
+pub fn open_read_only(path: &Path) -> rusqlite::Result<(Connection, SideFiles)> {
+    let sides = SideFiles::note(path);
+    let db = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+    db.busy_timeout(READ_ONLY_BUSY)?;
+    db.pragma_update(None, "query_only", true)?;
+    Ok((db, sides))
+}
+
+/// 읽기 거래 하나 안에서 `f`를 부른다 — 그 사이 쓰는 쪽이 거둔 판이 반쪽만 섞이지 않는다(WAL — 거래를 연 뒤 첫 읽기의 판을 끝까지 본다).
+pub fn in_read_tx<T>(db: &Connection, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    db.execute_batch("BEGIN")?;
+    let out = f();
+    if db.execute_batch("COMMIT").is_err() {
+        let _ = db.execute_batch("ROLLBACK");
+    }
+    out
+}
+
+/// 읽기 전용 열기가 만든 WAL 곁 파일(`-wal` · `-shm`) — 놓일 때 치운다(spec/windows-api.md 3-1).
+///
+/// SQLite는 꺼진 서재를 읽기 전용으로 열어도 빈 `-wal` · `-shm`을 만들고, 닫은 뒤에도 남긴다(읽기 전용 연결은 닫을 때 거두지 않는다 —
+/// 검사 `crates/library/tests/read_only.rs`). 열기 전에 없던 것만 지운다: `-wal`은 비었을 때만, `-shm`은 `-wal`이 없어졌을 때만, Windows만 —
+/// SQLite가 파일을 지우기 공유 없이 열므로, 그새 아카이브가 연 곁 파일은 지워지지 않고 실패한다(그대로 둔다 — 빈 WAL이라 해가 없고
+/// 아카이브가 닫을 때 거둔다). 다른 OS는 열린 파일도 지워져 쓰는 쪽을 깨뜨릴 수 있어 남겨 둔다.
+/// HistoryTime 엔진 `prototype/engine/src/shelf.rs`의 `tidy`와 같은 규칙이다.
+pub struct SideFiles {
+    wal: PathBuf,
+    shm: PathBuf,
+    had: [bool; 2],
+}
+
+impl SideFiles {
+    /// 연결을 열기 전에 부른다 — 그때 곁 파일이 있었는지 적어 둔다.
+    pub fn note(db: &Path) -> SideFiles {
+        let side = |tail: &str| {
+            let mut name = db.as_os_str().to_owned();
+            name.push(tail);
+            PathBuf::from(name)
+        };
+        let (wal, shm) = (side("-wal"), side("-shm"));
+        let had = [wal.exists(), shm.exists()];
+        SideFiles { wal, shm, had }
+    }
+}
+
+impl Drop for SideFiles {
+    fn drop(&mut self) {
+        if !cfg!(windows) {
+            return;
+        }
+        if !self.had[0] && std::fs::metadata(&self.wal).is_ok_and(|m| m.len() == 0) {
+            let _ = std::fs::remove_file(&self.wal);
+        }
+        if !self.had[1] && !self.wal.exists() {
+            let _ = std::fs::remove_file(&self.shm);
+        }
+    }
+}
+
 /// 이 파일이 우리 서재인지 본다 — 아무것도 쓰지 않는다. 표 수를 돌려준다(0이면 빈 새 파일).
-fn check_identity(db: &Connection, path: &Path) -> Result<i64> {
+pub(crate) fn check_identity(db: &Connection, path: &Path) -> Result<i64> {
     let not_ours = || Error::NotALibrary(path.to_path_buf());
     let app_id: i64 = db.pragma_query_value(None, "application_id", |r| r.get(0)).map_err(|e| identity_error(e, path))?;
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0)).map_err(|e| identity_error(e, path))?;
@@ -255,7 +321,7 @@ fn check_identity(db: &Connection, path: &Path) -> Result<i64> {
 
 /// SQLite가 "DB 파일이 아님"이라 할 때만 남의 파일로 본다. 잠김 · 권한 · 입출력 오류는 그대로 올린다 —
 /// 내 서재가 잠깐 잠겼을 뿐인데 "서재 파일이 아님"이라 하면 사용자가 진짜 서재를 지울 수 있다.
-fn identity_error(e: rusqlite::Error, path: &Path) -> Error {
+pub(crate) fn identity_error(e: rusqlite::Error, path: &Path) -> Error {
     match &e {
         rusqlite::Error::SqliteFailure(f, _) if f.code == ErrorCode::NotADatabase => Error::NotALibrary(path.to_path_buf()),
         _ => Error::Sqlite(e),
@@ -273,7 +339,7 @@ fn create_schema(db: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn meta_id<T>(db: &Connection, key: &str, parse: fn(&str) -> Option<T>) -> Result<T> {
+pub(crate) fn meta_id<T>(db: &Connection, key: &str, parse: fn(&str) -> Option<T>) -> Result<T> {
     let value: String = db
         .query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| r.get(0))
         .optional()?

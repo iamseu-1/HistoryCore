@@ -6,6 +6,7 @@ use crate::refs::{ObjectRef, CATEGORY, FILE};
 use regex::Regex;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
+use unicode_normalization::UnicodeNormalization;
 
 /// 해석 선택.
 #[derive(Clone, Debug)]
@@ -444,7 +445,9 @@ impl Run {
                 let args = split_args(&c[1]);
                 if let Some(entity) = args.first().filter(|e| !e.is_empty()) {
                     let range = key_values(&args[1..]).get("범위").cloned();
-                    out.push(Block::TimelineStrip { entity: entity.clone(), range });
+                    // 항목ID는 연표 링크(`ObjectRef::parse`)처럼 NFC로 맞춘다 — 색인 · 서재 창구가 같은 ID로 찾도록(spec/windows-api.md 8절).
+                    let entity = entity.nfc().collect();
+                    out.push(Block::TimelineStrip { entity, range });
                     i += 1;
                     continue;
                 }
