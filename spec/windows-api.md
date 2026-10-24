@@ -17,7 +17,7 @@
 | 서재 창구의 질의(HistoryCore 읽기 전용 열기 + `window.*`) | **됨** — HistoryCore 가지 `remake-7-link`(엔진 · 다리 op · Dart `LibraryWindow`, main 합치기 전 — 계획 `docs/superpowers/plans/2026-10-25-p5-window-library-view.md`) |
 | 서재 문서 그리기(`packages/library_view`) | **됨** — HistoryCore 가지 `remake-7-link`(판 0.1.0, 태그 전 — `LibraryDocView` · `HanjaCardView` · `kangxiUri`, 패키지 README) |
 | 연표 창구(HistoryTime 엔진 `window.*` · `HKCU\Software\HistoryTime` · `historytime` 등록) | **됨** — HistoryTime 가지 `remake-7`(`de5f1f9`, 그 저장소 main 합치기 전) |
-| 연표 창구를 읽는 쪽(아카이브) | **예정** — 아카이브 P5-2(계획 `docs/superpowers/plans/2026-10-25-p5-2-timeline-window.md`) |
+| 연표 창구를 읽는 쪽(아카이브) | **클라이언트 됨** — 아카이브 가지 `remake-7-link`(P5-2 걸음 6 — 자리 읽기 `RegGetValueW` · dll 사본 · 허락 목록 · 한 줄 차례 · `data_version` 받아 둔 답, `HistoryTimePort`). 화면 잇기(띠 · 오늘의 역사 · `[[연표:` 찾기)는 걸음 7 — 계획 `docs/superpowers/plans/2026-10-25-p5-2-timeline-window.md` |
 | 딥링크 받기 | **됨** — 아카이브(P5-1) · HistoryTime(Windows · 안드로이드는 코드만) |
 | Android 창구(ContentProvider) | **예정** — 서명 키(G11) 뒤. 아카이브는 `version`만 답하는 뼈대(P5-1) |
 
@@ -67,7 +67,7 @@
 | 읽는 쪽 → 상대 | 차례 |
 | --- | --- |
 | HistoryTime → 아카이브 서재 | `--library-dir=<폴더>` → `HKCU\Software\HistoryArchive`의 `LibraryDir` · `ApiVersion` → 판이 없으면 `<LibraryDir>\HistoryArchive.api.json`의 `api_version`. 시험 실행 · 안드로이드는 손잡이 없이 찾지 않는다 |
-| 아카이브 → HistoryTime 저장소 | 시험 손잡이(아카이브 계획 P5-2가 정함) → `HKCU\Software\HistoryTime`의 `Store` · `ApiVersion` · `Engine`. `HistoryTime.api.json`은 그 기억 폴더를 모르므로 보지 않는다. 시험 실행은 손잡이 없이 찾지 않는다 |
+| 아카이브 → HistoryTime 저장소 | 시험 손잡이 — 환경 변수 `HISTORY_ARCHIVE_TIMELINE_PLACE`(`HistoryTime.api.json` 꼴 파일의 경로 — 있으면 그것만) → `HKCU\Software\HistoryTime`의 `Store` · `ApiVersion` · `Engine`. 아카이브는 HistoryTime의 기억 폴더를 모르므로 `HistoryTime.api.json`을 스스로 찾지 않는다. 시험 실행(`HISTORY_ARCHIVE_DATA_DIR`)은 손잡이 없이 찾지 않는다 |
 | 시험용 작은 앱(아카이브 `tools/window/peek.dart`) → 서재 | 명령줄 폴더 → `LibraryDir`. 판은 그 폴더의 `HistoryArchive.api.json` |
 
 - 레지스트리는 `RegGetValueW`로 읽기를 권한다(프로세스를 띄우지 않고 · 글자 인코딩이 깨지지 않고 · REG_SZ 끝 NUL을 맞춰 준다). 값이 없거나 꼴이 다르면(REG_SZ가 아님 등) 자리가 없는 것으로 본다.
@@ -97,7 +97,7 @@ Android는 7절의 provider로 읽는다(예정).
 
 1. 자리(2-4)에서 `Store` · `ApiVersion` · `Engine`을 얻는다. 판이 크거나, 값 하나라도 없거나, `Store` · `Engine` 파일이 없으면 끈다.
 2. **일지가 남은 저장소는 열지 않는다** — `<Store>-journal`이 있으면(연표 앱이 쓰는 중이거나 쓰다가 죽음) 이번에는 끈다. 열면 HistoryTime 엔진(`Store::open`의 일지 되돌림)이 쓰기 연결로 되돌림을 해 저장소 파일이 바뀔 수 있다.
-3. **dll은 사본을 싣는다** — `Engine` 파일을 읽는 앱의 임시 폴더로 복사해 그 사본을 싣는다(사본 이름에 원본의 크기 · 고친 때 같은 지문을 넣어, 원본이 바뀌면 새 사본). 실린 dll은 Windows가 잠가, 원본을 실으면 HistoryTime 업데이트(설치기 · 포터블 덮어쓰기)가 막힌다.
+3. **dll은 사본을 싣는다** — `Engine` 파일을 읽는 앱의 임시 폴더로 복사해 그 사본을 싣는다(사본 이름에 원본의 크기 · 고친 때 같은 지문을 넣어, 원본이 바뀌면 새 사본 — 아카이브는 `archive_engine-<크기>-<고친 때 ms>-<SHA-256 앞 16자>.dll`). 실린 dll은 Windows가 잠가(이름은 바꿀 수 있으나 지우거나 덮어쓰지 못함), 원본을 실으면 HistoryTime 업데이트(설치기 · 포터블 덮어쓰기)가 막힌다.
 4. 부르는 함수는 `archive_call`(UTF-8 JSON 요청 → 답 글)과 `archive_free`(답을 놓음) 둘뿐이다. 다른 내보낸 함수(`archive_import` · `archive_tile` 등)는 부르지 않는다.
 5. **허락된 op만 보낸다** — `open` · `close` · `window.version` · `window.entity` · `window.entities_on_date` · `window.search_entities` · `window.strip` · `window.spans`. 그 밖(`apply` · `add_pack` · `remove_pack` · `window.locate` · `window.ids` · 다른 조회)은 읽는 쪽이 보내기 전에 거른다.
 6. **물을 때 열고 곧 놓는다** — `{"op": "open", "path": <Store>}` → `window.*` 몇 → `{"op": "close"}`. 연 채로 두지 않는다 — 연표 앱의 쓰기(DLC 넣고 빼기)는 열린 읽기 거래가 끝나기를 5초까지 기다린다.

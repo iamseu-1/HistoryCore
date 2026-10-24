@@ -10,13 +10,19 @@ import 'context.dart';
 import 'model.dart';
 
 /// 연표 창구 `strip(항목ID, 범위)`의 답(설계 7-3) — 시대 띠와 사건. 해는 소수(1592.5 = 1592년 한가운데).
+///
+/// 해는 **그림 축의 해**다 — 축이 고르게 이어지도록 서기 0년이 있는 셈(천문 해: 0 = 기원전 1년)으로 준다. 서기 0년이 없는 셈(−1 다음이 1)의
+/// 자료(HistoryTime 창구)는 주는 쪽이 천문 해로 바꾸고, 눈금 글은 [yearLabel]로 되돌린다.
 class TimelineStripData {
-  const TimelineStripData({required this.title, required this.from, required this.to, this.spans = const [], this.events = const []});
+  const TimelineStripData({required this.title, required this.from, required this.to, this.spans = const [], this.events = const [], this.yearLabel});
   final String title;
   final double from;
   final double to;
   final List<StripSpan> spans;
   final List<StripEvent> events;
+
+  /// 눈금 글 — 축의 정수 해(천문 해)를 글로. 없으면 그 수 그대로(`1592`).
+  final String Function(int year)? yearLabel;
 }
 
 class StripSpan {
@@ -84,7 +90,7 @@ SvgScene stripScene(TimelineStripData d, double width) {
   }
   final step = years.length > 8 ? (years.length / 4).ceil() : 2;
   for (final (i, y) in years.indexed) {
-    if (i % step == 0) shapes.add(SvgText(x(y.toDouble()), 74, '$y', fill: const SvgInk(Ink.muted)));
+    if (i % step == 0) shapes.add(SvgText(x(y.toDouble()), 74, d.yearLabel?.call(y) ?? '$y', fill: const SvgInk(Ink.muted)));
   }
   return SvgScene(shapes, viewBox: Rect.fromLTWH(0, 0, width, stripHeight));
 }

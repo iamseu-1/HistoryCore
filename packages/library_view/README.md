@@ -94,7 +94,7 @@ LibraryDocView(
 | `DocContext` | 바깥 일 — `exists` · `onLink` · `onUrl` · `onTimeline` · `onHanja`(올림 · 자리) · `onHanjaTap`(누름) · `strip` · `onFootnote` · `onSection` · `onEditSection` · `onMenu` · `onLinkHover` · `onFootnoteHover` · `now`, 연표 띠의 글 `stripOpenLabel`(기본 「HistoryTime에서 열기」) · `stripMissing`(자료가 없을 때의 한 줄). |
 | `HanjaCardView` · `HanjaCard` | 한자 카드. 자료(`card`)가 없으면 글자와 「자전에서 열기」만. |
 | `kangxiUri(글자)` | `historyarchive://kangxi/<글자>` — 「자전에서 열기」를 누르면 받는 앱이 이 링크를 연다. |
-| `TimelineStripData` · `StripSpan` · `StripEvent` | `strip` 콜백이 돌려줄 띠 자료(해는 소수 — 1592.5 = 1592년 한가운데). |
+| `TimelineStripData` · `StripSpan` · `StripEvent` | `strip` 콜백이 돌려줄 띠 자료(해는 소수 — 1592.5 = 1592년 한가운데). 해는 그림 축의 해(천문 해 — 0 = 기원전 1년)이고, 서기 0년이 없는 셈의 자료는 주는 쪽이 바꾼 뒤 눈금 글을 `yearLabel`로 되돌린다. |
 | `package:library_view/ui.dart` | 토큰 — `Ink` · `Vermilion` · `Radii` · `Metrics` · `TextStyles` · `Press` · `Glyphs` · `AppIcon` · `SvgPainter` · `DomTag`. |
 
 끌어 선택 · 복사는 받는 앱이 `SelectionArea`(또는 `SelectableRegion`)로 감싸 켠다 — 블록마다 줄바꿈, 표는 칸을 탭으로 잇는다.
