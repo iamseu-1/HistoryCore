@@ -157,6 +157,39 @@ void main() {
     await w.close();
   }, skip: windowsOnly);
 
+  test('옛 엔진 가르기의 기준 — 창구를 아는 엔진은 손잡이 0의 window.version에 bad_handle', () async {
+    final r = await core.call({'op': 'window.version', 'handle': 0});
+    expect((r['ok'], r['code']), (false, 'bad_handle'));
+  }, skip: windowsOnly);
+
+  // 창구를 모르는 옛 엔진 dll(main 8c7a7ba처럼 window.*가 없는 판)은 `read_only`를 모르는 칸으로 지나쳐 쓰는 열기를 한다 — 엔진 판 · ABI가
+  // 새 엔진과 같아 판으로는 못 가른다(가지 검토). 옛 dll은 git 밖이라 손잡이 `HISTORY_CORE_OLD_LIBRARY`를 줄 때만 돈다.
+  final oldLibrary = Platform.environment['HISTORY_CORE_OLD_LIBRARY'];
+  final Object oldSkip = !Platform.isWindows
+      ? 'Windows에서만'
+      : (oldLibrary == null || !File(oldLibrary).existsSync() ? '옛 엔진 dll 손잡이(HISTORY_CORE_OLD_LIBRARY)가 없음' : false);
+  test('옛 엔진이면 열지 않고 engine_too_old — 서재 · 폴더를 만들지도 고치지도 않는다', () async {
+    await seed();
+    final folder = Directory('${dir.path}${Platform.pathSeparator}HistoryCore');
+    final before = snapshot(folder);
+    final old = await HistoryCore.start(libraryPath: oldLibrary);
+    try {
+      final probe = await old.call({'op': 'window.version', 'handle': 0});
+      expect((probe['ok'], probe['code']), (false, null), reason: '옛 엔진은 「모르는 op」 — $probe');
+      final tooOld = throwsA(isA<HistoryCoreError>().having((e) => e.code, 'code', 'engine_too_old'));
+      await expectLater(LibraryWindow.open(old, dir.path), tooOld);
+      expect(snapshot(folder), before, reason: '서재 파일이 바이트까지 그대로');
+      final missing = Directory('${dir.path}${Platform.pathSeparator}없는 곳');
+      await expectLater(LibraryWindow.open(old, missing.path), tooOld);
+      expect(missing.existsSync(), isFalse, reason: '옛 엔진의 쓰는 열기였다면 서재를 새로 만들었다');
+    } finally {
+      old.close();
+    }
+    final w = await LibraryWindow.open(core, dir.path);
+    expect(w.info.library, isNotEmpty, reason: '새 엔진은 그대로 연다');
+    await w.close();
+  }, skip: oldSkip);
+
   test('값 형은 공개 fromJson으로 짓는다', () {
     final s = WindowDocSummary.fromJson({'id': 'a', 'ns': 'category', 'title': '조선', 'updated': '2026-10-24T03:15:00.123Z'});
     expect((s.id, s.ns, s.title, s.updated), ('a', Namespace.category, '조선', DateTime.utc(2026, 10, 24, 3, 15, 0, 123)));

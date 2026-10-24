@@ -77,10 +77,26 @@ class LibraryWindow {
 
   /// 앱 자료 폴더 [appDataDir](아카이브의 `LibraryDir`) 아래의 서재를 읽기 전용으로 연다.
   /// 같은 [core]에서 같은 폴더를 다시 열면 같은 손잡이다 — 하나를 닫으면 함께 닫힌다.
+  ///
+  /// 창구를 모르는 옛 엔진(`window.*`가 없는 판 — 엔진 판 · ABI가 새 엔진과 같아 판으로는 못 가른다)은 `read_only`를 모르는 칸으로
+  /// 지나쳐 **쓰는 열기**를 한다(서재 · 색인을 만들고 고침). 그래서 열기 전에 값싼 물음 하나로 가르고(spec/windows-api.md 3-1의 2),
+  /// 옛 엔진이면 열지 않고 `engine_too_old`로 실패한다. 연 답에 `read_only: true`가 없어도 곧 닫고 같은 코드로 실패한다.
   static Future<LibraryWindow> open(HistoryCore core, String appDataDir) async {
+    // 손잡이 0은 엔진이 주지 않는 번호다 — 창구를 아는 엔진은 `bad_handle`, 옛 엔진은 「모르는 op」(code 없음).
+    final probe = await core.call({'op': 'window.version', 'handle': 0});
+    if (probe['code'] != 'bad_handle') throw _tooOld('창구 물음의 답이 「${probe['error'] ?? probe}」');
     final r = _answer(await core.call({'op': 'library.open', 'dir': appDataDir, 'read_only': true}));
+    if (r['read_only'] != true) {
+      try {
+        await core.call({'op': 'library.close', 'handle': r['handle']});
+      } catch (_) {}
+      throw _tooOld('읽기 전용 열기의 답에 read_only가 없음');
+    }
     return LibraryWindow._(core, r['handle'] as int, LibraryInfo.fromJson(r));
   }
+
+  static HistoryCoreError _tooOld(String why) =>
+      HistoryCoreError('엔진이 서재 창구(읽기 전용 열기)를 모르는 옛 판이라 열지 않음 — $why', code: 'engine_too_old');
 
   Future<Map<String, dynamic>> _call(String op, [Map<String, Object?> args = const {}]) async =>
       _answer(await _core.call({'op': op, 'handle': _handle, ...args}));

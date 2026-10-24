@@ -26,6 +26,7 @@
 | `no_library` | 읽기 전용으로 열 서재가 없음(폴더 · `library.db`가 없거나 비었음) — 아무것도 만들지 않았다 |
 | `read_only` | 읽기 전용 손잡이로는 할 수 없는 op — 그 손잡이는 `window.*` · `library.close`만 받는다 |
 | `no_index` | 쓸 수 있는 색인이 없음(없거나 판 · 서재가 다름) — 읽기 전용 열기는 색인을 짓지 않으므로 색인을 쓰는 창구 질의가 답하지 못함 |
+| `engine_too_old` | 엔진이 내지 않고 Dart `LibraryWindow.open`이 낸다 — 창구를 모르는 옛 엔진 dll이라 읽기 전용으로 열지 않았다(옛 엔진은 `read_only`를 지나쳐 쓰는 열기를 함 — spec/windows-api.md 3-1의 2) |
 | `corrupt` · `sqlite` · `io` | 저장소 · 파일 문제 |
 
 ## 됨 (P2-1 · P2-2 · P2-3)
