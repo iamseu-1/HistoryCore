@@ -1,0 +1,207 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "table",
+   "caption": null,
+   "rows": [
+    [
+     {
+      "col": 2,
+      "row": 1,
+      "align": "center",
+      "inl": [
+       {
+        "t": "style",
+        "style": "bold",
+        "inl": [
+         {
+          "t": "param",
+          "name": "이름",
+          "fallback": null
+         }
+        ]
+       },
+       {
+        "t": "text",
+        "s": " "
+       },
+       {
+        "t": "br"
+       },
+       {
+        "t": "size",
+        "step": -1,
+        "inl": [
+         {
+          "t": "param",
+          "name": "원어",
+          "fallback": null
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    [
+     {
+      "col": 1,
+      "row": 1,
+      "align": "start",
+      "inl": [
+       {
+        "t": "text",
+        "s": "기간"
+       }
+      ]
+     },
+     {
+      "col": 1,
+      "row": 1,
+      "align": "start",
+      "inl": [
+       {
+        "t": "param",
+        "name": "기간",
+        "fallback": null
+       },
+       {
+        "t": "text",
+        "s": " "
+       },
+       {
+        "t": "br"
+       },
+       {
+        "t": "size",
+        "step": -1,
+        "inl": [
+         {
+          "t": "param",
+          "name": "기간주",
+          "fallback": null
+         }
+        ]
+       }
+      ]
+     }
+    ],
+    [
+     {
+      "col": 1,
+      "row": 1,
+      "align": "start",
+      "inl": [
+       {
+        "t": "text",
+        "s": "장소"
+       }
+      ]
+     },
+     {
+      "col": 1,
+      "row": 1,
+      "align": "start",
+      "inl": [
+       {
+        "t": "param",
+        "name": "장소",
+        "fallback": null
+       }
+      ]
+     }
+    ],
+    [
+     {
+      "col": 1,
+      "row": 1,
+      "align": "start",
+      "inl": [
+       {
+        "t": "text",
+        "s": "교전"
+       }
+      ]
+     },
+     {
+      "col": 1,
+      "row": 1,
+      "align": "start",
+      "inl": [
+       {
+        "t": "param",
+        "name": "교전",
+        "fallback": null
+       }
+      ]
+     }
+    ],
+    [
+     {
+      "col": 1,
+      "row": 1,
+      "align": "start",
+      "inl": [
+       {
+        "t": "text",
+        "s": "결과"
+       }
+      ]
+     },
+     {
+      "col": 1,
+      "row": 1,
+      "align": "start",
+      "inl": [
+       {
+        "t": "param",
+        "name": "결과",
+        "fallback": null
+       }
+      ]
+     }
+    ],
+    [
+     {
+      "col": 1,
+      "row": 1,
+      "align": "start",
+      "inl": [
+       {
+        "t": "text",
+        "s": "연표"
+       }
+      ]
+     },
+     {
+      "col": 1,
+      "row": 1,
+      "align": "start",
+      "inl": [
+       {
+        "t": "link",
+        "target": {
+         "ns": "연표",
+         "key": "@연표@",
+         "anchor": null
+        },
+        "inl": [
+         {
+          "t": "text",
+          "s": "HistoryTime에서 열기"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   ]
+  }
+ ],
+ "footnotes": [],
+ "sections": [],
+ "categories": [],
+ "template_categories": [],
+ "templates": []
+}

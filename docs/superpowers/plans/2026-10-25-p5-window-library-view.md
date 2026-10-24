@@ -83,9 +83,22 @@ class BlockView · HeadingView · TableView · FootnotesView;  class InlineSpans
 class HanjaCard { char · readings · radical · strokes · ... }  class HanjaCardView extends StatelessWidget;
 class TimelineStripData / StripSpan / StripEvent;            // 문서 속 연표 띠 그림 자료
 abstract final class Ink / Vermilion / Radii / Metrics / TextStyles; // 설계 3절 토큰
+
+// 걸음 4에서 지은 그대로 — 새로 더한 것
+class LibraryDocView extends StatelessWidget {   // 제 굴림. 머리 · 정보 상자(칸 720 아래면 본문 위) · 본문 · 각주
+  LibraryDocView({required Map<String, dynamic> model, required String title, DateTime? updated, DocContext? ctx,
+      double? width, EdgeInsets padding = const EdgeInsets.fromLTRB(16, 20, 16, 40), ScrollController? controller,
+      bool head = true, String? redirectedFrom});
+}
+class SliverLibraryDoc extends StatefulWidget { /* 같은 칸 — 받는 앱의 CustomScrollView 속 슬리버(padding · controller 없음) */ }
+class HanjaCardView { HanjaCardView({required String char, HanjaCard? card, required VoidCallback onOpen, double? width = 320, bool docked = false, String? missing}); }
+Uri kangxiUri(String char);                       // historyarchive://kangxi/<글자> (퍼센트로 쌈)
+class DocWidth extends InheritedWidget { static double of(BuildContext c); } // 칸 폭 → 없으면 화면 폭(표가 씀)
+DocContext DocContext.copyWith({...});            // 뛰는 자리(anchors)는 같은 것
+// 내는 곳: package:library_view/library_view.dart(그리기) · package:library_view/ui.dart(토큰 — Material의 Ink와 이름이 겹침)
 ```
 
-(이름은 아카이브의 지금 이름을 따른다 — 아카이브는 import만 바꾸면 된다. 공개 범위는 걸음 4에서 정리하되 아카이브 화면이 쓰는 것은 모두 낸다.)
+(이름은 아카이브의 지금 이름을 따른다 — 아카이브는 import만 바꾸면 된다. 공개 범위는 걸음 4에서 정리하되 아카이브 화면이 쓰는 것은 모두 낸다. → 걸음 4: 옮긴 파일의 공개 이름을 모두 낸다 — 알게 된 것 17 · 18.)
 
 ## 먼저 쓸 검사
 
@@ -126,6 +139,20 @@ abstract final class Ink / Vermilion / Radii / Metrics / TextStyles; // 설계 3
 15. **`limit`은 자른다** — 걸음 2의 넘길 것은 「`limit` 100 넘음 `bad_request`」였지만 spec 4절은 「많아야 100」이고 HistoryTime 창구(`limit_arg`)도 1 ~ 가장 많이로 자른다. 같은 규칙으로 갔다: 정수면 1 ~ 100, 정수가 아니면(글 · 소수) `bad_request`. `entity` 길이는 앞뒤 공백을 뗀 뒤 코드 포인트로 센다(HistoryTime `ID_MAX`와 같은 셈).
 16. **Dart 기록(record)은 `Uint8List`를 같은 객체인지로 견준다** — 파일이 바이트까지 그대로인지 보는 검사는 바이트 대신 지문(FNV-1a)을 기록에 넣는다(`window_test.dart`의 `snapshot`).
 
+### 걸음 4에서 알게 된 것
+
+17. **옮긴 몫(R6을 넓힘)** — 걸음 4 지시대로 `doc_head.dart`(`DocHeadView` · `CrumbView` · `HeadAction` · `PrimaryAction`)와 `ui/format.dart`도 옮겼다 — `LibraryDocView`의 머리가 `DocHeadView`를 쓰고, 파일째 옮겨 아카이브는 import만 바꾼다. 앱에 남는 것: `view/charts/` · `view/preview_card.dart`(서가 `DocPreview`에 기댐) · `ui/context_menu.dart` · `ui/mark.dart` · `ui/window_title.dart`. 이름은 모두 그대로(`ArchiveScroll`도).
+18. **옮기며 바꾼 셋 — 모두 아카이브와 맞물림(걸음 5가 지킬 것)**
+    - `HanjaCardView`: 자료가 없으면 **글자 칸과 「자전에서 열기」만**(지시 그대로 — 받는 앱 HistoryTime은 `window.hanja`가 예정이라 늘 이 꼴). 아카이브의 「표본 자전에 없는 글자」 줄은 새 칸 `missing`으로 준다 — **걸음 5에서 `doc_screen.dart`의 `HanjaCardView(…, missing: '표본 자전에 없는 글자')`를 넣어야 화면이 그대로다**(넣지 않으면 자료 없는 글자의 카드에서 그 줄과 음훈 자리 글자가 빠진다).
+    - `DocHeadView.updated`는 없어도 된다(null이면 「고침」 줄을 뺌) — 아카이브는 늘 주므로 그대로.
+    - `TableView`의 좁은 칸 여백(16 · 32)을 화면 폭 대신 **`DocWidth`(칸 폭) → 없으면 화면 폭**으로 고른다. 넓은 화면 속 380 칸에서 넓은 칸 여백을 고르던 것을 고침. 아카이브는 `DocWidth`를 두지 않아 그대로(검사 「표는 화면이 아니라 칸 폭으로」 — 되돌리면 빨갛다).
+    - 더한 것(아카이브는 쓰지 않음): `DocContext.copyWith` · `DocWidth` · `kangxiUri` · `LibraryDocView` · `SliverLibraryDoc` · `floatInfoMinWidth`, 그리고 `DocContext.stripOpenLabel` · `stripMissing` — 연표 띠의 「HistoryTime에서 열기」 · 「HistoryTime이 이 기기에 있으면 …」은 아카이브 말이라, HistoryTime이 그릴 때 제 말로 바꾼다(기본값은 아카이브 글이라 아카이브는 그대로).
+19. **`LibraryDocView`의 꼴** — 아카이브 문서 화면의 종이 몫과 같은 셈: 정보 상자의 틀 블록은 본문에서 빼고, `[각주]`가 없으면 끝에 각주, 본문 블록 목록은 한 번만 지어 펼친 접힌 문단이 다시 그려도 닫히지 않는다. 다른 것: 정보 상자를 띄우는 기준은 화면 갈래(1,100) 대신 **칸 폭 720**(곁 본문 388 이상), 넘겨주기 문서는 따라가지 않고 대상과 「열기」(`onLink`) — 창구 약속(4절)이 넘겨주기를 따라가지 않으므로. 각주 · 목차 뛰기는 받는 앱이 `onFootnote` · `onSection`을 주지 않으면 패키지가 제 굴림 안에서 뛴다(`Scrollable.maybeOf` — 슬리버로 남의 굴림에 넣어도 됨). `updated`는 UTC로 받아 `toLocal()`로 보인다.
+20. **이름 겹침** — `ui.dart`의 `Ink`는 Material의 `Ink` 위젯과 같은 이름이다. 그래서 토큰은 `package:library_view/ui.dart`로 따로 두고, `library_view.dart`가 내는 이름은 Flutter(material · widgets · rendering · painting · services · gestures)의 이름과 겹치지 않음을 확인했다. Material 앱은 `ui.dart`를 접두(`as lv`)나 `hide Ink`로 가져온다(README).
+21. **위젯 검사의 화면 밖** — `find.*`는 기본이 `skipOffstage: true`라, 게으른 목록이 미리 지은(화면 밖 · `cacheExtent` 안) 블록을 찾지 못한다. 문서 전부를 보는 검사는 `ArchiveScroll.cacheExtent`를 크게 하고 `skipOffstage: false`(그리고 `find.descendant`의 `matching` 찾기에도)를 준다. 아직 지어지지 않은 각주 위첨자는 `scrollUntilVisible`로 찾는다.
+22. **CI는 제 일(job)** — `library_view`는 엔진을 짓지 않는 따로 된 일 `library_view`(windows-2025 · pwsh)에서 `pub get` · `analyze` · `test`를 돈다. `ci_workflow_test`가 그 일이 있고 엔진 짓기 · cargo가 없음을 본다(일을 빼면 빨갛다).
+23. **R7은 하지 않았다** — `history_core` 판은 0.0.1 그대로(감독 결정을 기다림 — 올리면 아카이브 `pubspec.lock`의 판 줄이 함께 바뀐다). `library_view`만 0.1.0 · CHANGELOG. 태그는 감독.
+
 ## 진행(걸음 표시)
 
 전체 걸음은 두 저장소에 걸친 아홉이다. 이 저장소가 맡는 걸음은 1 · 2 · 3 · 4 · 8 · 9(5 · 6 · 7은 아카이브).
@@ -135,6 +162,6 @@ abstract final class Ink / Vermilion / Radii / Metrics / TextStyles; // 설계 3
 | 1 | 작업 폴더 · 정션 · `spec/windows-api.md` · `spec/README.md` · `spec/engine-api.md` 예정 줄 · `README.md` · 이 계획 | **끝**(2026-10-25) |
 | 2 | 엔진: 읽기 전용 열기(`Reader::open_library` · `Window`) · `window.*` 여섯의 Rust 몫 · 오류 코드 셋 · 띠 항목ID NFC(R5 — A로 감) · HLC → UTC ISO · `WINDOW_API_VERSION` · `spec/library-format.md` 색인 판(1 → 2)과 「읽기 전용 열기」 · `spec/namumark.md` 띠 NFC | **끝**(2026-10-25 — 새 검사 `crates/library/tests/read_only.rs` 9 · `crates/index/tests/window.rs` 12, 작업공간 232 통과) |
 | 3 | 다리 op · Dart `LibraryWindow` · 엔진 dll 짓기(`tools/build-native.ps1`) · `spec/engine-api.md` 예정 → 됨 | **끝**(2026-10-25 — 새 검사 `crates/ffi/tests/window.rs` 6 · `packages/history_core/test/window_test.dart` 5, dll `packages/history_core/native/windows-x64/history_core.dll`(git 밖) — 아카이브 걸음 5 ~ 8이 정션으로 씀) |
-| 4 | `packages/library_view` 0.1.0(R6 · R7 · R8) · `history_core` 0.1.0 | 기다림 |
+| 4 | `packages/library_view` 0.1.0(R6 · R7 · R8) · `history_core` 0.1.0 | **끝**(2026-10-25 — `library_view` 0.1.0 · CHANGELOG · README(글꼴 이름) · CI 일 `library_view`, 패키지 검사 44(옮긴 `blocks_test` 18 · `model_test` 5 + 새 `doc_view_test` 13 · `hanja_card_test` 5 · `package_test` 3) · `ci_workflow_test` 3 통과. `history_core` 0.1.0은 감독 결정 기다림(알게 된 것 23)) |
 | 8 | 함께 시험: 아카이브 작은 앱이 읽기 전용으로 peek · HistoryTime 임시 길(`shelf.docs`)과 같은 답인지 교차 확인 · 릴리스 빌드 | 기다림 |
 | 9 | 마무리: 새 검토자 · 넓은 검사(`cargo test --locked --workspace` · `clippy` · `flutter test` 두 패키지) · 보고 · 인수인계 · 넘길 것 | 기다림 |

@@ -28,4 +28,22 @@ void main() {
     final runs = steps('android').map((s) => '${s['run']}');
     expect(runs.any((r) => r.contains('--bin hc-bench') && r.contains('--target aarch64-linux-android')), isTrue);
   });
+
+  test('그리기 패키지(library_view)는 엔진을 짓지 않는 제 일에서 분석 · 검사한다', () {
+    // 엔진에 기대지 않는다는 약속(P5 R8)을 CI도 지킨다 — 엔진 짓기 없이 pub get · analyze · test가 돌아야 한다.
+    String dirOf(String job, YamlMap s) => (s['working-directory'] ?? jobs[job]['defaults']?['run']?['working-directory'] ?? '') as String;
+    final found = <String>[];
+    for (final job in jobs.keys.cast<String>()) {
+      for (final s in steps(job)) {
+        final run = s['run'] as String?;
+        if (run == null || dirOf(job, s) != 'packages/library_view') continue;
+        if (run.contains('flutter analyze') && run.contains('flutter test')) found.add(job);
+      }
+    }
+    expect(found, hasLength(1));
+    final runs = steps(found.single).map((s) => '${s['run'] ?? ''}${s['uses'] ?? ''}').join('\n');
+    expect(runs, contains('flutter pub get'));
+    expect(runs, isNot(contains('build-native')));
+    expect(runs, isNot(contains('cargo')));
+  });
 }

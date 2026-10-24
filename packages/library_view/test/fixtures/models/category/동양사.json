@@ -1,0 +1,20 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "text",
+     "s": "동양사 갈래."
+    }
+   ]
+  }
+ ],
+ "footnotes": [],
+ "sections": [],
+ "categories": [],
+ "template_categories": [],
+ "templates": []
+}

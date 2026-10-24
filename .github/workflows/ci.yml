@@ -43,6 +43,28 @@ jobs:
           flutter analyze
           flutter test
 
+  library_view:
+    name: 그리기 패키지(library_view) — 엔진 없이
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+        working-directory: packages/library_view
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - name: 그리기 패키지 검사(분석 · 위젯 검사)
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $true
+          flutter pub get
+          flutter analyze
+          flutter test
+
   android:
     name: Android 엔진(arm64)
     runs-on: ubuntu-latest

@@ -1,0 +1,42 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "br"
+    },
+    {
+     "t": "text",
+     "s": "홍건적의 난("
+    },
+    {
+     "t": "han",
+     "s": "紅巾賊"
+    },
+    {
+     "t": "text",
+     "s": "의 "
+    },
+    {
+     "t": "han",
+     "s": "亂"
+    },
+    {
+     "t": "text",
+     "s": ")은 1351년 원나라 말기에 일어난 농민 반란이다. 머리에 붉은 수건을 둘러 홍건적이라 불렸다. 무리의 한 갈래는 고려까지 쳐들어왔다."
+    }
+   ]
+  }
+ ],
+ "footnotes": [],
+ "sections": [],
+ "categories": [
+  "원나라",
+  "반란"
+ ],
+ "template_categories": [],
+ "templates": []
+}

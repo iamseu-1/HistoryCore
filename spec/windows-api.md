@@ -15,7 +15,7 @@
 | --- | --- |
 | 서재 창구의 자리(아카이브 레지스트리 · `HistoryArchive.api.json` · `historyarchive` 등록) | **됨** — 아카이브 P5-1 |
 | 서재 창구의 질의(HistoryCore 읽기 전용 열기 + `window.*`) | **됨** — HistoryCore 가지 `remake-7-link`(엔진 · 다리 op · Dart `LibraryWindow`, main 합치기 전 — 계획 `docs/superpowers/plans/2026-10-25-p5-window-library-view.md`) |
-| 서재 문서 그리기(`packages/library_view`) | **예정** — 같은 계획 |
+| 서재 문서 그리기(`packages/library_view`) | **됨** — HistoryCore 가지 `remake-7-link`(판 0.1.0, 태그 전 — `LibraryDocView` · `HanjaCardView` · `kangxiUri`, 패키지 README) |
 | 연표 창구(HistoryTime 엔진 `window.*` · `HKCU\Software\HistoryTime` · `historytime` 등록) | **됨** — HistoryTime 가지 `remake-7`(`de5f1f9`, 그 저장소 main 합치기 전) |
 | 연표 창구를 읽는 쪽(아카이브) | **예정** — 아카이브 P5-2(계획 `docs/superpowers/plans/2026-10-25-p5-2-timeline-window.md`) |
 | 딥링크 받기 | **됨** — 아카이브(P5-1) · HistoryTime(Windows · 안드로이드는 코드만) |

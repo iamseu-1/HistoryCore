@@ -1,0 +1,6 @@
+# 패키지라 pubspec.lock은 싣지 않는다(https://dart.dev/guides/libraries/private-files#pubspeclock).
+/pubspec.lock
+.dart_tool/
+.flutter-plugins-dependencies
+/build/
+/coverage/

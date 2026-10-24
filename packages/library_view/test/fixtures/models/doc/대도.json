@@ -1,0 +1,47 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "br"
+    },
+    {
+     "t": "text",
+     "s": "대도("
+    },
+    {
+     "t": "han",
+     "s": "大都"
+    },
+    {
+     "t": "text",
+     "s": ")는 원나라의 도읍이다. "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "쿠빌라이 칸",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "이 1267년부터 지었고, 오늘날 베이징 자리다."
+    }
+   ]
+  }
+ ],
+ "footnotes": [],
+ "sections": [],
+ "categories": [
+  "원나라",
+  "도시"
+ ],
+ "template_categories": [],
+ "templates": []
+}

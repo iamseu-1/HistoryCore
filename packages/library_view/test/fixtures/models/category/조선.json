@@ -1,0 +1,25 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "br"
+    },
+    {
+     "t": "text",
+     "s": "조선 갈래."
+    }
+   ]
+  }
+ ],
+ "footnotes": [],
+ "sections": [],
+ "categories": [
+  "한국사"
+ ],
+ "template_categories": [],
+ "templates": []
+}

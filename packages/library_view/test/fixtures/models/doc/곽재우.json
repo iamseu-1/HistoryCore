@@ -1,0 +1,38 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "br"
+    },
+    {
+     "t": "text",
+     "s": "조선 선조의 표본 문서다. "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "임진왜란",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": " 때의 일을 적는다."
+    }
+   ]
+  }
+ ],
+ "footnotes": [],
+ "sections": [],
+ "categories": [
+  "조선 선조"
+ ],
+ "template_categories": [],
+ "templates": []
+}

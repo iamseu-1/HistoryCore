@@ -1,0 +1,68 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "br"
+    },
+    {
+     "t": "text",
+     "s": "징비록("
+    },
+    {
+     "t": "han",
+     "s": "懲毖錄"
+    },
+    {
+     "t": "text",
+     "s": ")은 "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "류성룡",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "이 "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "임진왜란",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "의 경과를 적은 책이다. 제목은 『시경』의 \"내가 징계하여 뒷근심을 삼간다("
+    },
+    {
+     "t": "han",
+     "s": "予其懲而毖後患"
+    },
+    {
+     "t": "text",
+     "s": ")\"에서 따왔다."
+    }
+   ]
+  }
+ ],
+ "footnotes": [],
+ "sections": [],
+ "categories": [
+  "조선 선조",
+  "사료"
+ ],
+ "template_categories": [],
+ "templates": []
+}

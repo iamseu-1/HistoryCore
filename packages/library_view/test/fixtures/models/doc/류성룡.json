@@ -1,0 +1,73 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "br"
+    },
+    {
+     "t": "text",
+     "s": "류성룡("
+    },
+    {
+     "t": "han",
+     "s": "柳成龍"
+    },
+    {
+     "t": "text",
+     "s": ", 1542~1607)은 조선 선조 때의 문신이다. "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "임진왜란",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": " 때 영의정으로 전쟁을 이끌었고, 그 경과를 "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "징비록",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "에 남겼다. "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "이순신",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "을 천거하였다."
+    }
+   ]
+  }
+ ],
+ "footnotes": [],
+ "sections": [],
+ "categories": [
+  "조선 선조",
+  "인물"
+ ],
+ "template_categories": [],
+ "templates": []
+}

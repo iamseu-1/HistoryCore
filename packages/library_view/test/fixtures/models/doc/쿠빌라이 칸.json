@@ -1,0 +1,47 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "br"
+    },
+    {
+     "t": "text",
+     "s": "쿠빌라이 칸("
+    },
+    {
+     "t": "han",
+     "s": "忽必烈"
+    },
+    {
+     "t": "text",
+     "s": ", 1215~1294)은 원나라를 세운 몽골 제국의 다섯째 대칸이다. 도읍을 "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "대도",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "로 옮겼다."
+    }
+   ]
+  }
+ ],
+ "footnotes": [],
+ "sections": [],
+ "categories": [
+  "원나라",
+  "인물"
+ ],
+ "template_categories": [],
+ "templates": []
+}

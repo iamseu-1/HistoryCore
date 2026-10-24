@@ -1,0 +1,136 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "br"
+    },
+    {
+     "t": "text",
+     "s": "정유재란("
+    },
+    {
+     "t": "han",
+     "s": "丁酉再亂"
+    },
+    {
+     "t": "text",
+     "s": ")은 1597년 일본이 다시 조선을 침략한 전쟁이다. "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "임진왜란",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "의 두 번째 침략으로, 이듬해 "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "노량 해전",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "을 끝으로 끝났다."
+    },
+    {
+     "t": "fn",
+     "n": 1
+    }
+   ]
+  },
+  {
+   "t": "heading",
+   "level": 2,
+   "number": "1",
+   "section": 0,
+   "folded": false,
+   "inl": [
+    {
+     "t": "text",
+     "s": "경과"
+    }
+   ]
+  },
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "text",
+     "s": "1597년 음력 7월 칠천량에서 조선 수군이 크게 졌고, 다시 수군을 맡은 "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "이순신",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "이 "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "명량 해전",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "에서 열세 척으로 일본 수군을 막았다."
+    }
+   ]
+  },
+  {
+   "t": "footnotes"
+  }
+ ],
+ "footnotes": [
+  {
+   "n": 1,
+   "name": null,
+   "inl": [
+    {
+     "t": "text",
+     "s": "『선조실록』 30년 1월."
+    }
+   ]
+  }
+ ],
+ "sections": [
+  {
+   "index": 0,
+   "level": 2,
+   "number": "1",
+   "title": "경과",
+   "start": 136,
+   "end": 233
+  }
+ ],
+ "categories": [
+  "조선 선조",
+  "전쟁",
+  "16세기"
+ ],
+ "template_categories": [],
+ "templates": []
+}

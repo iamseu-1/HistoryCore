@@ -1,0 +1,87 @@
+{
+ "version": 1,
+ "redirect": null,
+ "blocks": [
+  {
+   "t": "para",
+   "inl": [
+    {
+     "t": "br"
+    },
+    {
+     "t": "text",
+     "s": "한산도 대첩("
+    },
+    {
+     "t": "han",
+     "s": "閑山島大捷"
+    },
+    {
+     "t": "text",
+     "s": ")은 "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "임진왜란",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": " 중인 1592년 음력 7월 8일, "
+    },
+    {
+     "t": "link",
+     "target": {
+      "ns": "문서",
+      "key": "이순신",
+      "anchor": null
+     },
+     "inl": null
+    },
+    {
+     "t": "text",
+     "s": "이 이끈 조선 수군이 한산도 앞바다에서 일본 수군을 크게 무찌른 해전이다. 조선 수군은 좁은 견내량에 머물던 일본 수군을 넓은 바다로 끌어낸 뒤 학익진("
+    },
+    {
+     "t": "han",
+     "s": "鶴翼陣"
+    },
+    {
+     "t": "text",
+     "s": ")을 펼쳐 공격하였다."
+    },
+    {
+     "t": "fn",
+     "n": 1
+    }
+   ]
+  },
+  {
+   "t": "footnotes"
+  }
+ ],
+ "footnotes": [
+  {
+   "n": 1,
+   "name": null,
+   "inl": [
+    {
+     "t": "text",
+     "s": "날짜는 음력이다."
+    }
+   ]
+  }
+ ],
+ "sections": [],
+ "categories": [
+  "조선 선조",
+  "전쟁",
+  "16세기"
+ ],
+ "template_categories": [],
+ "templates": []
+}

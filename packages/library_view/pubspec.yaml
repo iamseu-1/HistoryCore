@@ -1,0 +1,20 @@
+name: library_view
+description: 서재 문서 그리기 — 그리기 모델(JSON)과 콜백만으로 문서 전문 · 한자 카드 · 연표 띠를 그린다. 엔진에 기대지 않는다.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.0
+  flutter: ">=3.47.0"
+
+# 엔진(history_core)에 기대지 않는다(P5 R8) — test/package_test.dart가 지킨다.
+dependencies:
+  flutter:
+    sdk: flutter
+  path_drawing: ^1.0.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  lints: ^6.1.0
+  yaml: ^3.1.3
